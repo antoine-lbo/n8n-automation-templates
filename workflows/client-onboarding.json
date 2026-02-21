@@ -1,0 +1,322 @@
+{
+  "name": "Automated Client Onboarding Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "events": [
+          "*"
+        ],
+        "path": "new-client"
+      },
+      "id": "onb-0001",
+      "name": "New Client Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "create",
+        "email": "={{ $json.email }}",
+        "additionalFields": {
+          "firstName": "={{ $json.first_name }}",
+          "lastName": "={{ $json.last_name }}",
+          "company": "={{ $json.company }}",
+          "phone": "={{ $json.phone }}",
+          "lifecyclestage": "customer"
+        }
+      },
+      "id": "onb-0002",
+      "name": "Create CRM Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "create",
+        "name": "={{ $json.company }} - {{ $now.format('yyyy-MM') }}",
+        "parent": "onboarding_root_folder_id"
+      },
+      "id": "onb-0003",
+      "name": "Create Drive Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        680,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "copy",
+        "fileId": "onboarding_template_doc_id",
+        "name": "={{ $json.company }} - Onboarding Checklist",
+        "folderId": "={{ $node['Create Drive Folder'].json.id }}"
+      },
+      "id": "onb-0004",
+      "name": "Copy Template Docs",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        900,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "channel",
+        "operation": "create",
+        "channel": "={{ 'client-' + $json.company.toLowerCase().replace(/\\s+/g, '-') }}",
+        "isPrivate": true
+      },
+      "id": "onb-0005",
+      "name": "Create Slack Channel",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        680,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "={{ $node['Create Slack Channel'].json.channel.id }}",
+        "text": ":wave: *Welcome {{ $json.first_name }}!*\n\nWe're excited to start working with {{ $json.company }}. Here's what to expect:\n\n1. :clipboard: Your onboarding checklist is ready\n2. :calendar: Kickoff call will be scheduled shortly\n3. :file_folder: Shared docs are in your Drive folder\n4. :speech_balloon: Use this channel for any questions\n\nYour account manager: <@{{ $json.account_manager_id }}>",
+        "otherOptions": {}
+      },
+      "id": "onb-0006",
+      "name": "Welcome Message",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        900,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "onboarding@syncta.ai",
+        "toEmail": "={{ $json.email }}",
+        "subject": "Welcome to Syncta — Let's Get Started!",
+        "emailType": "html",
+        "html": "<h2>Welcome {{ $json.first_name }}!</h2><p>We're thrilled to have {{ $json.company }} on board.</p><p>Here's what happens next:</p><ul><li>Your dedicated Slack channel is ready</li><li>Onboarding docs have been shared with you</li><li>Your kickoff call will be scheduled within 24 hours</li></ul><p>If you have any questions, reply to this email or reach out on Slack.</p><p>Best,<br>The Syncta Team</p>"
+      },
+      "id": "onb-0007",
+      "name": "Send Welcome Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "event",
+        "operation": "create",
+        "calendar": "primary",
+        "summary": "Kickoff Call — {{ $json.company }}",
+        "description": "Onboarding kickoff with {{ $json.first_name }} {{ $json.last_name }} from {{ $json.company }}",
+        "start": "={{ $now.plus({days: 2}).set({hour: 10, minute: 0}).toISO() }}",
+        "end": "={{ $now.plus({days: 2}).set({hour: 10, minute: 30}).toISO() }}",
+        "additionalFields": {
+          "attendees": "={{ $json.email }},={{ $json.account_manager_email }}"
+        }
+      },
+      "id": "onb-0008",
+      "name": "Schedule Kickoff Call",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 3,
+      "position": [
+        1120,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "sheetId": "onboarding_tracker_sheet",
+        "range": "Clients!A:I",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "A",
+              "fieldValue": "={{ $json.company }}"
+            },
+            {
+              "column": "B",
+              "fieldValue": "={{ $json.first_name }} {{ $json.last_name }}"
+            },
+            {
+              "column": "C",
+              "fieldValue": "={{ $json.email }}"
+            },
+            {
+              "column": "D",
+              "fieldValue": "={{ $now.toISO() }}"
+            },
+            {
+              "column": "E",
+              "fieldValue": "onboarding"
+            },
+            {
+              "column": "F",
+              "fieldValue": "={{ $json.plan }}"
+            },
+            {
+              "column": "G",
+              "fieldValue": "={{ $node['Create Drive Folder'].json.webViewLink }}"
+            },
+            {
+              "column": "H",
+              "fieldValue": "={{ $json.account_manager }}"
+            }
+          ]
+        }
+      },
+      "id": "onb-0009",
+      "name": "Log to Tracker",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#new-clients",
+        "text": ":tada: *New Client Onboarded!*\n\nCompany: *{{ $json.company }}*\nContact: {{ $json.first_name }} {{ $json.last_name }}\nPlan: {{ $json.plan }}\nAM: <@{{ $json.account_manager_id }}>\n\n:white_check_mark: CRM contact created\n:white_check_mark: Drive folder + docs ready\n:white_check_mark: Slack channel created\n:white_check_mark: Welcome email sent\n:white_check_mark: Kickoff call scheduled",
+        "otherOptions": {}
+      },
+      "id": "onb-0010",
+      "name": "Notify Team",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "New Client Webhook": {
+      "main": [
+        [
+          {
+            "node": "Create CRM Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create CRM Contact": {
+      "main": [
+        [
+          {
+            "node": "Create Drive Folder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Slack Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Drive Folder": {
+      "main": [
+        [
+          {
+            "node": "Copy Template Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Copy Template Docs": {
+      "main": [
+        [
+          {
+            "node": "Send Welcome Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Slack Channel": {
+      "main": [
+        [
+          {
+            "node": "Welcome Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Welcome Message": {
+      "main": [
+        [
+          {
+            "node": "Send Welcome Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Welcome Email": {
+      "main": [
+        [
+          {
+            "node": "Schedule Kickoff Call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log to Tracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Tracker": {
+      "main": [
+        [
+          {
+            "node": "Notify Team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "syncta-n8n-templates"
+  }
+}
