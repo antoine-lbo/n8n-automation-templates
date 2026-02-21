@@ -1,0 +1,239 @@
+{
+  "name": "Lead Enrichment Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "enrich-lead",
+        "responseMode": "responseNode"
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.clearbit.com/v2/companies/find?domain={{$json.domain}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "clearbit-lookup",
+      "name": "Clearbit Company Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        470,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.hunter.io/v2/email-finder?domain={{$json.domain}}&first_name={{$json.first_name}}&last_name={{$json.last_name}}&api_key={{$credentials.hunterApiKey}}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "hunter-email-verify",
+      "name": "Hunter.io Email Verify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        470,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const clearbit = $input.all()[0].json;\nconst hunter = $input.all()[1].json;\nconst original = $input.all()[2].json;\n\nreturn [{\n  json: {\n    email: original.email,\n    first_name: original.first_name,\n    last_name: original.last_name,\n    company: clearbit.name || original.company,\n    domain: original.domain,\n    industry: clearbit.category?.industry || 'Unknown',\n    company_size: clearbit.metrics?.employees || null,\n    estimated_revenue: clearbit.metrics?.estimatedAnnualRevenue || null,\n    location: clearbit.geo?.city ? `${clearbit.geo.city}, ${clearbit.geo.country}` : null,\n    linkedin_url: clearbit.linkedin?.handle ? `https://linkedin.com/company/${clearbit.linkedin.handle}` : null,\n    email_verified: hunter.data?.result === 'deliverable',\n    email_confidence: hunter.data?.score || 0,\n    tech_stack: clearbit.tech || [],\n    enriched_at: new Date().toISOString(),\n    enrichment_sources: ['clearbit', 'hunter']\n  }\n}];"
+      },
+      "id": "merge-data",
+      "name": "Merge Enrichment Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4",
+        "messages": {
+          "values": [
+            {
+              "content": "=Analyze this lead and provide a qualification score (0-100), tier (HOT/WARM/COLD), and brief reasoning.\n\nLead data:\n- Company: {{$json.company}}\n- Industry: {{$json.industry}}\n- Size: {{$json.company_size}} employees\n- Revenue: {{$json.estimated_revenue}}\n- Email verified: {{$json.email_verified}}\n\nRespond in JSON: {\"score\": number, \"tier\": string, \"reasoning\": string}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "ai-scoring",
+      "name": "AI Lead Scoring",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "upsert",
+        "email": "={{$json.email}}",
+        "additionalFields": {
+          "firstName": "={{$json.first_name}}",
+          "lastName": "={{$json.last_name}}",
+          "company": "={{$json.company}}",
+          "leadScore": "={{$json.score}}",
+          "customProperties": {
+            "qualification_tier": "={{$json.tier}}",
+            "ai_reasoning": "={{$json.reasoning}}"
+          }
+        }
+      },
+      "id": "hubspot-upsert",
+      "name": "HubSpot Upsert Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#leads",
+        "text": "=:sparkles: *New Enriched Lead*\n*{{$json.first_name}} {{$json.last_name}}* at *{{$json.company}}*\nScore: {{$json.score}}/100 ({{$json.tier}})\nIndustry: {{$json.industry}} | Size: {{$json.company_size}}\nReasoning: {{$json.reasoning}}",
+        "otherOptions": {}
+      },
+      "id": "slack-notify",
+      "name": "Slack Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Clearbit Company Lookup",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Hunter.io Email Verify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clearbit Company Lookup": {
+      "main": [
+        [
+          {
+            "node": "Merge Enrichment Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hunter.io Email Verify": {
+      "main": [
+        [
+          {
+            "node": "Merge Enrichment Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Enrichment Data": {
+      "main": [
+        [
+          {
+            "node": "AI Lead Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Lead Scoring": {
+      "main": [
+        [
+          {
+            "node": "HubSpot Upsert Contact",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Slack Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot Upsert Contact": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Notification": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "syncta-n8n-templates"
+  }
+}
