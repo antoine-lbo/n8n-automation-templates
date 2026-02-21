@@ -1,0 +1,269 @@
+{
+  "name": "Customer Onboarding Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-customer",
+        "responseMode": "lastNode"
+      },
+      "id": "signup-webhook",
+      "name": "New Signup Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "create",
+        "email": "={{$json.email}}",
+        "additionalFields": {
+          "firstName": "={{$json.first_name}}",
+          "lastName": "={{$json.last_name}}",
+          "company": "={{$json.company}}",
+          "lifecycleStage": "customer"
+        }
+      },
+      "id": "create-crm-contact",
+      "name": "Create CRM Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        470,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "welcome@syncta.ai",
+        "toEmail": "={{$json.email}}",
+        "subject": "Welcome to {{$json.company_name}}! Let's get you started",
+        "html": "=<h1>Welcome, {{$json.first_name}}!</h1><p>We're excited to have you on board. Here's how to get started in 3 easy steps:</p><ol><li>Complete your profile</li><li>Invite your team</li><li>Connect your first integration</li></ol><p><a href='https://app.syncta.ai/onboarding'>Start Onboarding →</a></p>"
+      },
+      "id": "welcome-email",
+      "name": "Send Welcome Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        470,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#new-customers",
+        "text": "=:tada: *New Customer Signup!*\n*{{$json.first_name}} {{$json.last_name}}* from *{{$json.company}}*\nPlan: {{$json.plan}}\nEmail: {{$json.email}}",
+        "otherOptions": {}
+      },
+      "id": "slack-alert",
+      "name": "Slack Team Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        470,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.plan}}",
+              "operation": "equals",
+              "value2": "enterprise"
+            }
+          ]
+        }
+      },
+      "id": "check-plan",
+      "name": "Is Enterprise?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "task",
+        "operation": "create",
+        "name": "=Onboard {{$json.company}} (Enterprise)",
+        "dueDate": "={{DateTime.now().plus({days: 2}).toISO()}}",
+        "assignee": "={{$env.CSM_EMAIL}}",
+        "notes": "=New enterprise customer: {{$json.first_name}} {{$json.last_name}} at {{$json.company}}.\nEmail: {{$json.email}}\nSchedule kickoff call within 48 hours."
+      },
+      "id": "create-csm-task",
+      "name": "Create CSM Task",
+      "type": "n8n-nodes-base.asana",
+      "typeVersion": 1,
+      "position": [
+        920,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "waitValue": 3,
+        "waitUnit": "days"
+      },
+      "id": "wait-3-days",
+      "name": "Wait 3 Days",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        920,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.syncta.ai/internal/users/{{$json.email}}/activity",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "check-activity",
+      "name": "Check User Activity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1140,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.login_count}}",
+              "operation": "smallerEqual",
+              "value2": 1
+            }
+          ]
+        }
+      },
+      "id": "is-inactive",
+      "name": "Is Inactive?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "success@syncta.ai",
+        "toEmail": "={{$json.email}}",
+        "subject": "Need help getting started, {{$json.first_name}}?",
+        "html": "=<p>Hi {{$json.first_name}},</p><p>We noticed you haven't had a chance to explore the platform yet. No worries — we're here to help!</p><p>Would you like to schedule a quick 15-minute walkthrough?</p><p><a href='https://calendly.com/syncta/onboarding'>Book a time →</a></p>"
+      },
+      "id": "nudge-email",
+      "name": "Send Nudge Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "New Signup Webhook": {
+      "main": [
+        [
+          {
+            "node": "Create CRM Contact",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Welcome Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Slack Team Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Welcome Email": {
+      "main": [
+        [
+          {
+            "node": "Is Enterprise?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Enterprise?": {
+      "main": [
+        [
+          {
+            "node": "Create CSM Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 3 Days",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 3 Days": {
+      "main": [
+        [
+          {
+            "node": "Check User Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check User Activity": {
+      "main": [
+        [
+          {
+            "node": "Is Inactive?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Inactive?": {
+      "main": [
+        [
+          {
+            "node": "Send Nudge Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "syncta-n8n-templates"
+  }
+}
