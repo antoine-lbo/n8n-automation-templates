@@ -1,0 +1,325 @@
+{
+  "name": "Error Monitoring & Alerting Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "errors/ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-1",
+      "name": "Error Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.first().json.body;\n\nconst severity = classifySeverity(error);\nconst fingerprint = generateFingerprint(error);\n\nfunction classifySeverity(err) {\n  if (err.status >= 500) return 'critical';\n  if (err.message?.match(/timeout|connection refused|ECONNRESET/i)) return 'critical';\n  if (err.message?.match(/unauthorized|forbidden|auth/i)) return 'high';\n  if (err.status >= 400) return 'medium';\n  return 'low';\n}\n\nfunction generateFingerprint(err) {\n  const parts = [err.message?.slice(0, 50), err.endpoint, err.status].filter(Boolean);\n  return parts.join('|').replace(/[^a-zA-Z0-9|]/g, '_').slice(0, 100);\n}\n\nreturn [{\n  json: {\n    ...error,\n    severity,\n    fingerprint,\n    processed_at: new Date().toISOString(),\n    environment: error.environment || 'production'\n  }\n}];"
+      },
+      "id": "node-2",
+      "name": "Classify & Fingerprint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/error_events",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": \"{{ $json.message }}\",\n  \"stack_trace\": \"{{ $json.stack_trace }}\",\n  \"severity\": \"{{ $json.severity }}\",\n  \"fingerprint\": \"{{ $json.fingerprint }}\",\n  \"endpoint\": \"{{ $json.endpoint }}\",\n  \"status_code\": {{ $json.status || 500 }},\n  \"user_id\": \"{{ $json.user_id }}\",\n  \"environment\": \"{{ $json.environment }}\",\n  \"metadata\": {{ JSON.stringify($json.metadata || {}) }},\n  \"created_at\": \"{{ $json.processed_at }}\"\n}",
+        "options": {}
+      },
+      "id": "node-3",
+      "name": "Store in Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/error_events?fingerprint=eq.{{ $json.fingerprint }}&created_at=gte.{{ new Date(Date.now() - 3600000).toISOString() }}&select=id",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-4",
+      "name": "Check Frequency",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={\"status\":\"received\",\"severity\":\"{{ $('Classify & Fingerprint').item.json.severity }}\",\"fingerprint\":\"{{ $('Classify & Fingerprint').item.json.fingerprint }}\"}",
+        "options": {}
+      },
+      "id": "node-5",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        680,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-1",
+              "leftValue": "={{ $('Classify & Fingerprint').item.json.severity }}",
+              "rightValue": "critical",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        }
+      },
+      "id": "node-6",
+      "name": "Is Critical?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#alerts-critical",
+        "text": "=:rotating_light: *CRITICAL ERROR* :rotating_light:\n\n*Message:* {{ $('Classify & Fingerprint').item.json.message }}\n*Endpoint:* `{{ $('Classify & Fingerprint').item.json.endpoint }}`\n*Status:* {{ $('Classify & Fingerprint').item.json.status || 'N/A' }}\n*Environment:* {{ $('Classify & Fingerprint').item.json.environment }}\n*Occurrences (1h):* {{ $('Check Frequency').item.json.length || 1 }}\n*Fingerprint:* `{{ $('Classify & Fingerprint').item.json.fingerprint.slice(0, 40) }}`\n\n<{{ $env.APP_URL }}/admin/errors|View in Dashboard>",
+        "otherOptions": {}
+      },
+      "id": "node-7",
+      "name": "Slack Critical Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1160,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-2",
+              "leftValue": "={{ $('Check Frequency').item.json.length }}",
+              "rightValue": "5",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node-8",
+      "name": "Spike Detected?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#alerts-errors",
+        "text": "=:chart_with_upwards_trend: *Error Spike Detected*\n\n*Message:* {{ $('Classify & Fingerprint').item.json.message }}\n*Severity:* {{ $('Classify & Fingerprint').item.json.severity }}\n*Occurrences (1h):* {{ $('Check Frequency').item.json.length }}\n*Endpoint:* `{{ $('Classify & Fingerprint').item.json.endpoint }}`\n\nThis error has occurred {{ $('Check Frequency').item.json.length }} times in the last hour.",
+        "otherOptions": {}
+      },
+      "id": "node-9",
+      "name": "Slack Spike Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1160,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts@syncta.ai",
+        "toEmail": "={{ $env.ON_CALL_EMAIL }}",
+        "subject": "=[CRITICAL] {{ $('Classify & Fingerprint').item.json.message.slice(0, 80) }}",
+        "emailType": "html",
+        "html": "=<div style=\"font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto;\">\n<div style=\"background: #dc2626; color: white; padding: 20px; border-radius: 8px 8px 0 0;\">\n<h2 style=\"margin: 0;\">Critical Error Alert</h2>\n</div>\n<div style=\"background: #fef2f2; padding: 20px; border: 1px solid #fecaca;\">\n<p><strong>Message:</strong> {{ $('Classify & Fingerprint').item.json.message }}</p>\n<p><strong>Endpoint:</strong> <code>{{ $('Classify & Fingerprint').item.json.endpoint }}</code></p>\n<p><strong>Status:</strong> {{ $('Classify & Fingerprint').item.json.status || 'N/A' }}</p>\n<p><strong>Environment:</strong> {{ $('Classify & Fingerprint').item.json.environment }}</p>\n<p><strong>Occurrences (1h):</strong> {{ $('Check Frequency').item.json.length || 1 }}</p>\n<p><strong>Time:</strong> {{ $('Classify & Fingerprint').item.json.processed_at }}</p>\n</div>\n<div style=\"padding: 20px; background: white; border: 1px solid #e5e7eb; border-top: 0; border-radius: 0 0 8px 8px;\">\n<h3>Stack Trace</h3>\n<pre style=\"background: #1f2937; color: #f9fafb; padding: 16px; border-radius: 4px; overflow-x: auto; font-size: 12px;\">{{ $('Classify & Fingerprint').item.json.stack_trace || 'No stack trace available' }}</pre>\n<a href=\"{{ $env.APP_URL }}/admin/errors\" style=\"display: inline-block; background: #dc2626; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; margin-top: 12px;\">View in Dashboard</a>\n</div>\n</div>",
+        "options": {}
+      },
+      "id": "node-10",
+      "name": "Email On-Call",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1160,
+        60
+      ]
+    }
+  ],
+  "connections": {
+    "Error Webhook": {
+      "main": [
+        [
+          {
+            "node": "Classify & Fingerprint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify & Fingerprint": {
+      "main": [
+        [
+          {
+            "node": "Store in Supabase",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Frequency",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Frequency": {
+      "main": [
+        [
+          {
+            "node": "Is Critical?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Spike Detected?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Critical?": {
+      "main": [
+        [
+          {
+            "node": "Slack Critical Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email On-Call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Spike Detected?": {
+      "main": [
+        [
+          {
+            "node": "Slack Spike Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "err-mon-v1",
+  "meta": {
+    "instanceId": "syncta-n8n-templates"
+  },
+  "tags": [
+    {
+      "name": "monitoring"
+    },
+    {
+      "name": "error-tracking"
+    },
+    {
+      "name": "alerting"
+    },
+    {
+      "name": "slack"
+    }
+  ]
+}
