@@ -1,0 +1,355 @@
+{
+  "name": "Customer Feedback Loop",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "feedback",
+        "responseMode": "responseNode"
+      },
+      "name": "Feedback Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const feedback = $input.first().json;\n\n// Validate required fields\nconst required = ['customer_email', 'rating', 'feedback_text'];\nfor (const field of required) {\n  if (!feedback[field]) {\n    return [{ json: { error: `Missing required field: ${field}`, valid: false } }];\n  }\n}\n\n// Normalize rating to 1-5\nconst rating = Math.min(5, Math.max(1, parseInt(feedback.rating)));\n\n// Classify sentiment\nlet sentiment;\nif (rating >= 4) sentiment = 'positive';\nelse if (rating === 3) sentiment = 'neutral';\nelse sentiment = 'negative';\n\n// Extract categories via keywords\nconst text = feedback.feedback_text.toLowerCase();\nconst categories = [];\nif (text.includes('bug') || text.includes('error') || text.includes('broken')) categories.push('bug');\nif (text.includes('slow') || text.includes('performance') || text.includes('speed')) categories.push('performance');\nif (text.includes('feature') || text.includes('wish') || text.includes('would like')) categories.push('feature_request');\nif (text.includes('ui') || text.includes('design') || text.includes('confusing')) categories.push('ux');\nif (text.includes('price') || text.includes('expensive') || text.includes('billing')) categories.push('pricing');\nif (categories.length === 0) categories.push('general');\n\nreturn [{\n  json: {\n    valid: true,\n    customer_email: feedback.customer_email,\n    customer_name: feedback.customer_name || 'Unknown',\n    rating,\n    sentiment,\n    categories,\n    feedback_text: feedback.feedback_text,\n    source: feedback.source || 'api',\n    timestamp: new Date().toISOString(),\n    id: require('crypto').randomUUID()\n  }\n}];"
+      },
+      "name": "Classify Feedback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.valid }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Is Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: $json.error }) }}"
+      },
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        900,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, id: $json.id, sentiment: $json.sentiment }) }}"
+      },
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        900,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-supabase-url.supabase.co/rest/v1/feedback",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_API_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.SUPABASE_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "name": "customer_email",
+              "value": "={{ $json.customer_email }}"
+            },
+            {
+              "name": "customer_name",
+              "value": "={{ $json.customer_name }}"
+            },
+            {
+              "name": "rating",
+              "value": "={{ $json.rating }}"
+            },
+            {
+              "name": "sentiment",
+              "value": "={{ $json.sentiment }}"
+            },
+            {
+              "name": "categories",
+              "value": "={{ JSON.stringify($json.categories) }}"
+            },
+            {
+              "name": "feedback_text",
+              "value": "={{ $json.feedback_text }}"
+            },
+            {
+              "name": "source",
+              "value": "={{ $json.source }}"
+            }
+          ]
+        }
+      },
+      "name": "Store in Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1120,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.sentiment }}",
+              "operation": "equals",
+              "value2": "negative"
+            }
+          ]
+        }
+      },
+      "name": "Is Negative?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#customer-feedback",
+        "text": ":rotating_light: *Negative Feedback Alert*\n\n*Customer:* {{ $json.customer_name }} ({{ $json.customer_email }})\n*Rating:* {{ $json.rating }}/5\n*Categories:* {{ $json.categories.join(', ') }}\n\n> {{ $json.feedback_text }}\n\n_Source: {{ $json.source }} | {{ $json.timestamp }}_",
+        "otherOptions": {}
+      },
+      "name": "Slack Negative Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#customer-feedback",
+        "text": ":star: *New Feedback ({{ $json.rating }}/5)*\n*Customer:* {{ $json.customer_name }}\n*Sentiment:* {{ $json.sentiment }}\n*Categories:* {{ $json.categories.join(', ') }}\n\n> {{ $json.feedback_text.substring(0, 200) }}{{ $json.feedback_text.length > 200 ? '...' : '' }}",
+        "otherOptions": {}
+      },
+      "name": "Slack Feedback Log",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const feedback = $input.first().json;\n\n// Only send follow-up for negative feedback with bug or performance issues\nif (feedback.sentiment !== 'negative') return [];\nif (!feedback.categories.some(c => ['bug', 'performance'].includes(c))) return [];\n\nconst subject = `We're looking into your feedback`;\nconst body = `Hi ${feedback.customer_name},\\n\\nThank you for your feedback. We noticed you reported an issue and wanted to let you know our team is already looking into it.\\n\\nWe'll follow up with you once we have an update.\\n\\nBest regards,\\nThe Support Team`;\n\nreturn [{\n  json: {\n    to: feedback.customer_email,\n    subject,\n    body,\n    feedback_id: feedback.id\n  }\n}];"
+      },
+      "name": "Prepare Follow-up Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "support@yourapp.com",
+        "toEmail": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "text": "={{ $json.body }}"
+      },
+      "name": "Send Follow-up Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\n// Weekly digest aggregation\nconst now = new Date();\nconst weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);\n\nconst summary = {\n  period: `${weekAgo.toISOString().split('T')[0]} to ${now.toISOString().split('T')[0]}`,\n  total_feedback: items.length,\n  avg_rating: (items.reduce((sum, i) => sum + i.json.rating, 0) / items.length).toFixed(1),\n  sentiment_breakdown: {\n    positive: items.filter(i => i.json.sentiment === 'positive').length,\n    neutral: items.filter(i => i.json.sentiment === 'neutral').length,\n    negative: items.filter(i => i.json.sentiment === 'negative').length\n  },\n  top_categories: Object.entries(\n    items.flatMap(i => i.json.categories).reduce((acc, c) => ({ ...acc, [c]: (acc[c] || 0) + 1 }), {})\n  ).sort((a, b) => b[1] - a[1]).slice(0, 5),\n  nps_score: Math.round(\n    ((items.filter(i => i.json.rating >= 4).length - items.filter(i => i.json.rating <= 2).length) / items.length) * 100\n  )\n};\n\nreturn [{ json: summary }];"
+      },
+      "name": "Build Weekly Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        460
+      ]
+    }
+  ],
+  "connections": {
+    "Feedback Webhook": {
+      "main": [
+        [
+          {
+            "node": "Classify Feedback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Feedback": {
+      "main": [
+        [
+          {
+            "node": "Is Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Valid?": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Success Response": {
+      "main": [
+        [
+          {
+            "node": "Store in Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Supabase": {
+      "main": [
+        [
+          {
+            "node": "Is Negative?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Negative?": {
+      "main": [
+        [
+          {
+            "node": "Slack Negative Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack Feedback Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Negative Alert": {
+      "main": [
+        [
+          {
+            "node": "Prepare Follow-up Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Follow-up Email": {
+      "main": [
+        [
+          {
+            "node": "Send Follow-up Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "customer-feedback"
+    },
+    {
+      "name": "nps"
+    },
+    {
+      "name": "sentiment-analysis"
+    },
+    {
+      "name": "support"
+    }
+  ]
+}
