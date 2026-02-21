@@ -1,0 +1,328 @@
+{
+  "name": "Invoice Reminder Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "name": "Check Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.STRIPE_API_URL || 'https://api.stripe.com' }}/v1/invoices",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.STRIPE_SECRET_KEY }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "open"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        }
+      },
+      "name": "Fetch Open Invoices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const invoices = $input.first().json.data || [];\nconst now = Date.now() / 1000;\nconst results = [];\n\nfor (const inv of invoices) {\n  const dueDate = inv.due_date;\n  const daysUntilDue = Math.ceil((dueDate - now) / 86400);\n  const daysOverdue = daysUntilDue < 0 ? Math.abs(daysUntilDue) : 0;\n  const amountDue = (inv.amount_due / 100).toFixed(2);\n  const currency = inv.currency.toUpperCase();\n\n  let urgency, action;\n  if (daysOverdue > 30) {\n    urgency = 'critical';\n    action = 'escalate_to_collections';\n  } else if (daysOverdue > 14) {\n    urgency = 'high';\n    action = 'send_final_notice';\n  } else if (daysOverdue > 0) {\n    urgency = 'medium';\n    action = 'send_overdue_reminder';\n  } else if (daysUntilDue <= 3) {\n    urgency = 'low';\n    action = 'send_upcoming_reminder';\n  } else {\n    continue; // Not yet actionable\n  }\n\n  results.push({\n    json: {\n      invoice_id: inv.id,\n      customer_id: inv.customer,\n      customer_email: inv.customer_email,\n      customer_name: inv.customer_name || 'Customer',\n      amount_due: amountDue,\n      currency,\n      due_date: new Date(dueDate * 1000).toISOString().split('T')[0],\n      days_until_due: daysUntilDue,\n      days_overdue: daysOverdue,\n      urgency,\n      action,\n      invoice_url: inv.hosted_invoice_url,\n      invoice_pdf: inv.invoice_pdf,\n      attempt_count: inv.attempt_count || 0\n    }\n  });\n}\n\nreturn results.length > 0 ? results : [{ json: { empty: true } }];"
+      },
+      "name": "Classify Invoice Urgency",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.empty }}",
+              "operation": "notEqual",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Has Actionable Invoices?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.urgency }}",
+              "operation": "equals",
+              "value2": "critical"
+            },
+            {
+              "value1": "={{ $json.urgency }}",
+              "operation": "equals",
+              "value2": "high"
+            }
+          ]
+        },
+        "combineOperation": "any"
+      },
+      "name": "Is High Priority?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#billing-alerts",
+        "text": ":rotating_light: *Overdue Invoice — {{ $json.urgency | upper }}*\n\n*Customer:* {{ $json.customer_name }} ({{ $json.customer_email }})\n*Amount:* {{ $json.currency }} {{ $json.amount_due }}\n*Due Date:* {{ $json.due_date }}\n*Days Overdue:* {{ $json.days_overdue }}\n*Action:* {{ $json.action }}\n\n<{{ $json.invoice_url }}|View Invoice>",
+        "otherOptions": {}
+      },
+      "name": "Slack Urgent Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inv = $input.first().json;\nlet subject, body;\n\nswitch (inv.action) {\n  case 'send_upcoming_reminder':\n    subject = `Upcoming invoice: ${inv.currency} ${inv.amount_due} due ${inv.due_date}`;\n    body = `Hi ${inv.customer_name},\\n\\nThis is a friendly reminder that your invoice for ${inv.currency} ${inv.amount_due} is due on ${inv.due_date}.\\n\\nYou can view and pay your invoice here:\\n${inv.invoice_url}\\n\\nIf you have any questions, please don't hesitate to reach out.\\n\\nBest regards,\\nBilling Team`;\n    break;\n  case 'send_overdue_reminder':\n    subject = `Payment overdue: ${inv.currency} ${inv.amount_due} was due ${inv.due_date}`;\n    body = `Hi ${inv.customer_name},\\n\\nWe noticed that your invoice for ${inv.currency} ${inv.amount_due} is now ${inv.days_overdue} days overdue.\\n\\nPlease make your payment at your earliest convenience:\\n${inv.invoice_url}\\n\\nIf there are any issues with this invoice, please let us know so we can help resolve them.\\n\\nBest regards,\\nBilling Team`;\n    break;\n  case 'send_final_notice':\n    subject = `Final notice: ${inv.currency} ${inv.amount_due} overdue since ${inv.due_date}`;\n    body = `Hi ${inv.customer_name},\\n\\nThis is a final notice regarding your outstanding invoice of ${inv.currency} ${inv.amount_due}, which is now ${inv.days_overdue} days overdue.\\n\\nPlease make payment immediately to avoid any service interruption:\\n${inv.invoice_url}\\n\\nIf you believe this is an error, please contact us right away.\\n\\nBest regards,\\nBilling Team`;\n    break;\n  default:\n    subject = `Invoice reminder: ${inv.currency} ${inv.amount_due}`;\n    body = `Hi ${inv.customer_name},\\n\\nPlease review your invoice for ${inv.currency} ${inv.amount_due}:\\n${inv.invoice_url}\\n\\nBest regards,\\nBilling Team`;\n}\n\nreturn [{ json: { ...inv, email_subject: subject, email_body: body } }];"
+      },
+      "name": "Generate Email Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "billing@yourapp.com",
+        "toEmail": "={{ $json.customer_email }}",
+        "subject": "={{ $json.email_subject }}",
+        "text": "={{ $json.email_body }}"
+      },
+      "name": "Send Reminder Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/invoice_reminders",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_API_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.SUPABASE_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "invoice_id",
+              "value": "={{ $json.invoice_id }}"
+            },
+            {
+              "name": "customer_email",
+              "value": "={{ $json.customer_email }}"
+            },
+            {
+              "name": "action",
+              "value": "={{ $json.action }}"
+            },
+            {
+              "name": "urgency",
+              "value": "={{ $json.urgency }}"
+            },
+            {
+              "name": "amount_due",
+              "value": "={{ $json.amount_due }}"
+            }
+          ]
+        }
+      },
+      "name": "Log Reminder in DB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1560,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Check Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch Open Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Open Invoices": {
+      "main": [
+        [
+          {
+            "node": "Classify Invoice Urgency",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Invoice Urgency": {
+      "main": [
+        [
+          {
+            "node": "Has Actionable Invoices?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Actionable Invoices?": {
+      "main": [
+        [
+          {
+            "node": "Is High Priority?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Is High Priority?": {
+      "main": [
+        [
+          {
+            "node": "Slack Urgent Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Urgent Alert": {
+      "main": [
+        [
+          {
+            "node": "Generate Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Email Content": {
+      "main": [
+        [
+          {
+            "node": "Send Reminder Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reminder Email": {
+      "main": [
+        [
+          {
+            "node": "Log Reminder in DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "billing"
+    },
+    {
+      "name": "invoicing"
+    },
+    {
+      "name": "stripe"
+    },
+    {
+      "name": "reminders"
+    }
+  ]
+}
