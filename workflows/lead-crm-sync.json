@@ -1,0 +1,328 @@
+{
+  "name": "Lead CRM Sync — Bi-directional HubSpot & Supabase",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.APP_URL}}/api/leads?status=pending_sync&limit=50",
+        "method": "GET",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "fetch-pending",
+      "name": "Fetch Pending Leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        460,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "app-api-key",
+          "name": "App API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const leads = $input.all();\nconst toCreate = [];\nconst toUpdate = [];\n\nfor (const item of leads) {\n  const lead = item.json;\n  if (lead.hubspot_contact_id) {\n    toUpdate.push({ json: lead });\n  } else {\n    toCreate.push({ json: lead });\n  }\n}\n\n// Output 0: new contacts, Output 1: existing contacts\nreturn [toCreate, toUpdate];"
+      },
+      "id": "split-new-existing",
+      "name": "Split New vs Existing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const lead = $input.first().json;\n\nconst properties = {\n  email: lead.email,\n  firstname: lead.name?.split(' ')[0] || '',\n  lastname: lead.name?.split(' ').slice(1).join(' ') || '',\n  company: lead.company,\n  phone: lead.phone || '',\n  lead_score: String(lead.score || 0),\n  lead_tier: lead.tier || 'COLD',\n  lead_source: lead.source || 'api',\n  hs_lead_status: lead.tier === 'HOT' ? 'OPEN_DEAL' : lead.tier === 'WARM' ? 'IN_PROGRESS' : 'NEW',\n  qualification_reasoning: (lead.reasoning || '').substring(0, 500),\n  industry: lead.enrichment?.industry || '',\n  numberofemployees: lead.enrichment?.company_size || '',\n  annualrevenue: lead.enrichment?.estimated_revenue || ''\n};\n\nreturn [{ json: { ...lead, hubspot_properties: properties } }];"
+      },
+      "id": "map-create-fields",
+      "name": "Map Fields for Create",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({ properties: $json.hubspot_properties })}}",
+        "options": {}
+      },
+      "id": "hubspot-create",
+      "name": "Create HubSpot Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1120,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-token",
+          "name": "HubSpot API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const lead = $input.first().json;\n\nconst properties = {\n  lead_score: String(lead.score || 0),\n  lead_tier: lead.tier || 'COLD',\n  hs_lead_status: lead.tier === 'HOT' ? 'OPEN_DEAL' : lead.tier === 'WARM' ? 'IN_PROGRESS' : 'NEW',\n  qualification_reasoning: (lead.reasoning || '').substring(0, 500),\n  industry: lead.enrichment?.industry || '',\n  numberofemployees: lead.enrichment?.company_size || ''\n};\n\nreturn [{ json: { ...lead, hubspot_properties: properties } }];"
+      },
+      "id": "map-update-fields",
+      "name": "Map Fields for Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.hubapi.com/crm/v3/objects/contacts/{{$json.hubspot_contact_id}}",
+        "method": "PATCH",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({ properties: $json.hubspot_properties })}}",
+        "options": {}
+      },
+      "id": "hubspot-update",
+      "name": "Update HubSpot Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1120,
+        400
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-token",
+          "name": "HubSpot API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "leads",
+        "columns": "hubspot_contact_id,sync_status,synced_at",
+        "filterByField": "id",
+        "filterByValue": "={{$json.id}}",
+        "additionalFields": {}
+      },
+      "id": "update-sync-status",
+      "name": "Mark as Synced",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = $input.all();\nconst created = results.filter(r => r.json._action === 'created').length;\nconst updated = results.filter(r => r.json._action === 'updated').length;\nconst failed = results.filter(r => r.json._action === 'failed').length;\n\nif (created + updated + failed === 0) return [];\n\nreturn [{\n  json: {\n    summary: `CRM Sync: ${created} created, ${updated} updated, ${failed} failed`,\n    created,\n    updated,\n    failed,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "build-summary",
+      "name": "Build Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#sales-ops",
+        "text": ":arrows_counterclockwise: *CRM Sync Complete*\n\n{{$json.summary}}\n\n_{{$json.timestamp}}_",
+        "attachments": [],
+        "otherOptions": {}
+      },
+      "id": "slack-summary",
+      "name": "Slack Summary",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        300
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-creds",
+          "name": "Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Fetch Pending Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Pending Leads": {
+      "main": [
+        [
+          {
+            "node": "Split New vs Existing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split New vs Existing": {
+      "main": [
+        [
+          {
+            "node": "Map Fields for Create",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Map Fields for Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Fields for Create": {
+      "main": [
+        [
+          {
+            "node": "Create HubSpot Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Fields for Update": {
+      "main": [
+        [
+          {
+            "node": "Update HubSpot Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create HubSpot Contact": {
+      "main": [
+        [
+          {
+            "node": "Mark as Synced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update HubSpot Contact": {
+      "main": [
+        [
+          {
+            "node": "Mark as Synced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark as Synced": {
+      "main": [
+        [
+          {
+            "node": "Build Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Summary": {
+      "main": [
+        [
+          {
+            "node": "Slack Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "crm",
+      "id": "crm"
+    },
+    {
+      "name": "hubspot",
+      "id": "hubspot"
+    },
+    {
+      "name": "lead-sync",
+      "id": "lead-sync"
+    },
+    {
+      "name": "sales",
+      "id": "sales"
+    }
+  ]
+}
