@@ -1,0 +1,326 @@
+{
+  "name": "Social Media Content Scheduler",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0001",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "sheetId": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
+        "range": "ContentCalendar!A:G",
+        "filters": {
+          "column": "F",
+          "value": "scheduled"
+        }
+      },
+      "id": "a1b2c3d4-0002",
+      "name": "Fetch Scheduled Posts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.publish_date }}",
+              "operation": "equals",
+              "value2": "={{ $now.format('yyyy-MM-dd') }}"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0003",
+      "name": "Filter Today Posts",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4",
+        "messages": {
+          "values": [
+            {
+              "content": "You are a social media expert. Optimize the following post for {{ $json.platform }}. Keep the core message but adapt tone, length, and hashtags for the platform.\n\nOriginal post: {{ $json.content }}\nTarget audience: {{ $json.audience }}\nCampaign: {{ $json.campaign }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 500
+        }
+      },
+      "id": "a1b2c3d4-0004",
+      "name": "AI Optimize Content",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.platform }}",
+              "value2": "twitter"
+            },
+            {
+              "value1": "={{ $json.platform }}",
+              "value2": "linkedin"
+            },
+            {
+              "value1": "={{ $json.platform }}",
+              "value2": "instagram"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0005",
+      "name": "Route by Platform",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "tweet",
+        "text": "={{ $json.optimized_content }}"
+      },
+      "id": "a1b2c3d4-0006",
+      "name": "Post to Twitter/X",
+      "type": "n8n-nodes-base.twitter",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "post",
+        "postAs": "person",
+        "text": "={{ $json.optimized_content }}",
+        "shareMediaCategory": "NONE"
+      },
+      "id": "a1b2c3d4-0007",
+      "name": "Post to LinkedIn",
+      "type": "n8n-nodes-base.linkedIn",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "createMediaPost",
+        "caption": "={{ $json.optimized_content }}",
+        "mediaUrl": "={{ $json.image_url }}"
+      },
+      "id": "a1b2c3d4-0008",
+      "name": "Post to Instagram",
+      "type": "n8n-nodes-base.instagram",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "sheetId": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
+        "range": "ContentCalendar!A:G",
+        "valueInputMode": "RAW",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "F",
+              "fieldValue": "published"
+            },
+            {
+              "column": "G",
+              "fieldValue": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0009",
+      "name": "Update Sheet Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#social-media",
+        "text": ":white_check_mark: *Post Published*\nPlatform: {{ $json.platform }}\nContent: {{ $json.optimized_content.substring(0, 100) }}...\nCampaign: {{ $json.campaign }}",
+        "otherOptions": {}
+      },
+      "id": "a1b2c3d4-0010",
+      "name": "Slack Confirmation",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Scheduled Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Scheduled Posts": {
+      "main": [
+        [
+          {
+            "node": "Filter Today Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Today Posts": {
+      "main": [
+        [
+          {
+            "node": "AI Optimize Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Optimize Content": {
+      "main": [
+        [
+          {
+            "node": "Route by Platform",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Platform": {
+      "main": [
+        [
+          {
+            "node": "Post to Twitter/X",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post to LinkedIn",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post to Instagram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post to Twitter/X": {
+      "main": [
+        [
+          {
+            "node": "Update Sheet Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post to LinkedIn": {
+      "main": [
+        [
+          {
+            "node": "Update Sheet Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post to Instagram": {
+      "main": [
+        [
+          {
+            "node": "Update Sheet Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Sheet Status": {
+      "main": [
+        [
+          {
+            "node": "Slack Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "syncta-n8n-templates"
+  }
+}
