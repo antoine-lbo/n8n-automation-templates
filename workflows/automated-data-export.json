@@ -1,0 +1,289 @@
+{
+  "name": "Automated Data Export Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "node-1",
+      "name": "Weekly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/get_weekly_report_data",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_ANON_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "start_date",
+              "value": "={{$today.minus({weeks: 1}).toISODate()}}"
+            },
+            {
+              "name": "end_date",
+              "value": "={{$today.toISODate()}}"
+            }
+          ]
+        }
+      },
+      "id": "node-2",
+      "name": "Fetch Report Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst data = items[0].json;\n\nconst summary = {\n  total_leads: data.total_leads || 0,\n  qualified_leads: data.qualified_leads || 0,\n  conversion_rate: data.total_leads > 0 ? ((data.qualified_leads / data.total_leads) * 100).toFixed(1) : '0.0',\n  avg_score: data.avg_score ? data.avg_score.toFixed(1) : '0.0',\n  top_sources: data.top_sources || [],\n  hot_leads: data.hot_leads || 0,\n  warm_leads: data.warm_leads || 0,\n  cold_leads: data.cold_leads || 0,\n  avg_processing_time_ms: data.avg_processing_time || 0,\n  period_start: $today.minus({weeks: 1}).toISODate(),\n  period_end: $today.toISODate()\n};\n\nconst rows = (data.leads || []).map(lead => ({\n  email: lead.email,\n  company: lead.company,\n  score: lead.score,\n  tier: lead.tier,\n  source: lead.source,\n  industry: lead.enrichment?.industry || 'N/A',\n  company_size: lead.enrichment?.employee_count || 'N/A',\n  qualified_at: lead.created_at\n}));\n\nreturn [{ json: { summary, rows } }];"
+      },
+      "id": "node-3",
+      "name": "Transform Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.summary.total_leads > 0}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-4",
+      "name": "Has Data?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{$env.GOOGLE_SHEET_ID}}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Weekly Reports",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "node-5",
+      "name": "Update Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "options": {
+          "fileName": "={{`weekly-report-${$json.summary.period_end}.json`}}"
+        }
+      },
+      "id": "node-6",
+      "name": "Generate JSON Report",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "bucketName": "={{$env.S3_BUCKET_NAME}}",
+        "fileName": "={{`reports/weekly/${$json.summary.period_end}.json`}}",
+        "binaryPropertyName": "data"
+      },
+      "id": "node-7",
+      "name": "Upload to S3",
+      "type": "n8n-nodes-base.s3",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#weekly-reports",
+        "text": "={{`📊 *Weekly Lead Report* (${$json.summary.period_start} → ${$json.summary.period_end})\\n\\n*Total Leads:* ${$json.summary.total_leads}\\n*Qualified:* ${$json.summary.qualified_leads} (${$json.summary.conversion_rate}%)\\n*Average Score:* ${$json.summary.avg_score}\\n\\n🔥 Hot: ${$json.summary.hot_leads} | 🟡 Warm: ${$json.summary.warm_leads} | 🔵 Cold: ${$json.summary.cold_leads}\\n\\n_Report exported to Google Sheets and S3_`}}",
+        "otherOptions": {}
+      },
+      "id": "node-8",
+      "name": "Slack Summary",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#weekly-reports",
+        "text": "⚠️ No lead data found for the weekly report period. This may indicate an issue with data collection.",
+        "otherOptions": {}
+      },
+      "id": "node-9",
+      "name": "Slack No Data Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [
+        1120,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "Weekly Schedule": {
+      "main": [
+        [
+          {
+            "node": "Fetch Report Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Report Data": {
+      "main": [
+        [
+          {
+            "node": "Transform Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Data": {
+      "main": [
+        [
+          {
+            "node": "Has Data?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Data?": {
+      "main": [
+        [
+          {
+            "node": "Update Google Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Generate JSON Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack No Data Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Google Sheet": {
+      "main": [
+        [
+          {
+            "node": "Slack Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate JSON Report": {
+      "main": [
+        [
+          {
+            "node": "Upload to S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "data-export",
+      "id": "tag-1"
+    },
+    {
+      "name": "reporting",
+      "id": "tag-2"
+    },
+    {
+      "name": "google-sheets",
+      "id": "tag-3"
+    },
+    {
+      "name": "s3",
+      "id": "tag-4"
+    }
+  ]
+}
