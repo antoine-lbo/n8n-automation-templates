@@ -1,0 +1,395 @@
+{
+  "name": "Error Monitoring & Alerting Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "node-001",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.APP_URL }}/api/health",
+        "options": {
+          "timeout": 10000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "node-002",
+      "name": "Health Check API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        440,
+        200
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT level, COUNT(*) as count, MAX(created_at) as latest FROM error_logs WHERE created_at > NOW() - INTERVAL '5 minutes' GROUP BY level ORDER BY count DESC"
+      },
+      "id": "node-003",
+      "name": "Query Error Logs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        440,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "db-001",
+          "name": "Production DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const healthCheck = $('Health Check API').first();\nconst errorLogs = $('Query Error Logs').all();\n\nconst isHealthy = healthCheck.json.statusCode === 200;\nconst responseTime = healthCheck.json.headers?.['x-response-time'] || 'unknown';\n\nlet severity = 'ok';\nlet criticalCount = 0;\nlet warningCount = 0;\nlet errorCount = 0;\n\nfor (const log of errorLogs) {\n  switch (log.json.level) {\n    case 'critical': criticalCount += parseInt(log.json.count); break;\n    case 'error': errorCount += parseInt(log.json.count); break;\n    case 'warning': warningCount += parseInt(log.json.count); break;\n  }\n}\n\nif (!isHealthy || criticalCount > 0) severity = 'critical';\nelse if (errorCount > 10) severity = 'high';\nelse if (errorCount > 0 || warningCount > 20) severity = 'medium';\nelse if (warningCount > 0) severity = 'low';\n\nconst timestamp = new Date().toISOString();\n\nreturn [{\n  json: {\n    severity,\n    isHealthy,\n    responseTime,\n    criticalCount,\n    errorCount,\n    warningCount,\n    totalErrors: criticalCount + errorCount + warningCount,\n    timestamp,\n    summary: `[${severity.toUpperCase()}] Health: ${isHealthy ? 'UP' : 'DOWN'} | Critical: ${criticalCount} | Errors: ${errorCount} | Warnings: ${warningCount}`\n  }\n}];"
+      },
+      "id": "node-004",
+      "name": "Analyze & Classify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            {
+              "outputKey": "critical",
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "critical",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "outputKey": "high",
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "high",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "outputKey": "medium",
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "medium",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "outputKey": "low_ok",
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "low",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-005",
+      "name": "Route by Severity",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#incidents",
+        "text": ":rotating_light: *CRITICAL ALERT*\n\n{{ $json.summary }}\n\nHealth: {{ $json.isHealthy ? 'UP' : 'DOWN' }}\nResponse Time: {{ $json.responseTime }}ms\nCritical Errors: {{ $json.criticalCount }}\nErrors: {{ $json.errorCount }}\nTimestamp: {{ $json.timestamp }}\n\n<{{ $env.APP_URL }}/admin/errors|View Error Dashboard>",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "node-006",
+      "name": "Slack Critical Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [
+        1140,
+        100
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-001",
+          "name": "Slack Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#engineering",
+        "text": ":warning: *High Severity Alert*\n\n{{ $json.summary }}\n\nErrors (5min): {{ $json.errorCount }}\nWarnings: {{ $json.warningCount }}\n\n<{{ $env.APP_URL }}/admin/errors|View Errors>",
+        "otherOptions": {}
+      },
+      "id": "node-007",
+      "name": "Slack High Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [
+        1140,
+        280
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-001",
+          "name": "Slack Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "monitoring_events",
+        "columns": "severity,is_healthy,critical_count,error_count,warning_count,response_time,summary,created_at",
+        "options": {}
+      },
+      "id": "node-008",
+      "name": "Log to Database",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        1140,
+        460
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "db-001",
+          "name": "Production DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.ONCALL_EMAIL }}",
+        "subject": "[CRITICAL] Production Alert - {{ $json.timestamp }}",
+        "emailType": "text",
+        "message": "CRITICAL PRODUCTION ALERT\n\nStatus: {{ $json.isHealthy ? 'UP' : 'DOWN' }}\nCritical Errors: {{ $json.criticalCount }}\nTotal Errors: {{ $json.totalErrors }}\nTimestamp: {{ $json.timestamp }}\n\nImmediate action required. Check {{ $env.APP_URL }}/admin/errors"
+      },
+      "id": "node-009",
+      "name": "Email On-Call",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1360,
+        100
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-001",
+          "name": "SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\nconst metrics = {\n  timestamp: data.timestamp,\n  uptime: data.isHealthy ? 1 : 0,\n  error_rate: data.totalErrors,\n  response_time: parseInt(data.responseTime) || 0\n};\n\n// Calculate rolling averages from last 24h\nreturn [{ json: { ...data, metrics, retention_days: 30 } }];"
+      },
+      "id": "node-010",
+      "name": "Prepare Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        640
+      ]
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Health Check API",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Error Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Check API": {
+      "main": [
+        [
+          {
+            "node": "Analyze & Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Error Logs": {
+      "main": [
+        [
+          {
+            "node": "Analyze & Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze & Classify": {
+      "main": [
+        [
+          {
+            "node": "Route by Severity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Severity": {
+      "main": [
+        [
+          {
+            "node": "Slack Critical Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack High Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log to Database",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Critical Alert": {
+      "main": [
+        [
+          {
+            "node": "Email On-Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "monitoring"
+    },
+    {
+      "name": "alerting"
+    },
+    {
+      "name": "error-tracking"
+    },
+    {
+      "name": "production"
+    }
+  ],
+  "pinData": {}
+}
