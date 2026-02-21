@@ -1,0 +1,342 @@
+{
+  "name": "Invoice Generation & Delivery",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 1 * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Monthly Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.APP_URL}}/api/billing/pending-invoices",
+        "method": "GET",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "fetch-clients",
+      "name": "Fetch Billable Clients",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        460,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "app-api-key",
+          "name": "App API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst invoices = [];\n\nfor (const item of items) {\n  const client = item.json;\n  const lineItems = client.usage_items || [];\n  \n  const subtotal = lineItems.reduce((sum, li) => sum + (li.quantity * li.unit_price), 0);\n  const taxRate = client.tax_rate || 0;\n  const taxAmount = Math.round(subtotal * taxRate * 100) / 100;\n  const total = Math.round((subtotal + taxAmount) * 100) / 100;\n  \n  const invoiceNumber = `INV-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(client.client_id).padStart(4, '0')}`;\n  \n  const dueDate = new Date();\n  dueDate.setDate(dueDate.getDate() + (client.payment_terms || 30));\n  \n  invoices.push({\n    json: {\n      invoice_number: invoiceNumber,\n      client_id: client.client_id,\n      client_name: client.company_name,\n      client_email: client.billing_email,\n      client_address: client.billing_address || '',\n      currency: client.currency || 'USD',\n      line_items: lineItems.map(li => ({\n        description: li.description,\n        quantity: li.quantity,\n        unit_price: li.unit_price,\n        amount: Math.round(li.quantity * li.unit_price * 100) / 100\n      })),\n      subtotal,\n      tax_rate: taxRate,\n      tax_amount: taxAmount,\n      total,\n      issue_date: new Date().toISOString().split('T')[0],\n      due_date: dueDate.toISOString().split('T')[0],\n      payment_terms: client.payment_terms || 30,\n      notes: client.invoice_notes || ''\n    }\n  });\n}\n\nreturn invoices;"
+      },
+      "id": "calculate-invoices",
+      "name": "Calculate Invoice Totals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "invoices",
+        "columns": "invoice_number,client_id,client_name,client_email,currency,subtotal,tax_amount,total,issue_date,due_date,status,line_items_json",
+        "additionalFields": {}
+      },
+      "id": "store-invoice",
+      "name": "Store in Database",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        900,
+        200
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const invoice = $input.first().json;\n\nconst html = `\n<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #1a1a1a; max-width: 800px; margin: 0 auto; padding: 40px; }\n    .header { display: flex; justify-content: space-between; margin-bottom: 40px; }\n    .company-name { font-size: 24px; font-weight: 700; color: #0f172a; }\n    .invoice-title { font-size: 32px; font-weight: 300; color: #64748b; text-align: right; }\n    .invoice-number { font-size: 14px; color: #64748b; text-align: right; }\n    .addresses { display: flex; justify-content: space-between; margin-bottom: 40px; }\n    .address-block h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; margin-bottom: 8px; }\n    table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }\n    thead th { background: #f8fafc; padding: 12px 16px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; border-bottom: 2px solid #e2e8f0; }\n    tbody td { padding: 12px 16px; border-bottom: 1px solid #f1f5f9; }\n    .amount-col { text-align: right; }\n    .totals { margin-left: auto; width: 280px; }\n    .totals tr td { padding: 8px 16px; }\n    .totals .total-row { font-size: 18px; font-weight: 700; border-top: 2px solid #0f172a; }\n    .footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8; }\n    .status-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; background: #fef3c7; color: #92400e; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">\n    <div>\n      <div class=\"company-name\">Syncta</div>\n      <div style=\"color: #64748b; font-size: 14px;\">syncta.ai</div>\n    </div>\n    <div>\n      <div class=\"invoice-title\">INVOICE</div>\n      <div class=\"invoice-number\">${invoice.invoice_number}</div>\n      <div style=\"margin-top: 8px;\"><span class=\"status-badge\">Pending</span></div>\n    </div>\n  </div>\n  <div class=\"addresses\">\n    <div class=\"address-block\">\n      <h3>Bill To</h3>\n      <strong>${invoice.client_name}</strong><br/>\n      ${invoice.client_email}<br/>\n      ${invoice.client_address}\n    </div>\n    <div class=\"address-block\" style=\"text-align: right;\">\n      <h3>Invoice Details</h3>\n      Issue Date: ${invoice.issue_date}<br/>\n      Due Date: ${invoice.due_date}<br/>\n      Terms: Net ${invoice.payment_terms}\n    </div>\n  </div>\n  <table>\n    <thead><tr><th>Description</th><th>Qty</th><th>Unit Price</th><th class=\"amount-col\">Amount</th></tr></thead>\n    <tbody>\n      ${invoice.line_items.map(li => '<tr><td>' + li.description + '</td><td>' + li.quantity + '</td><td>' + invoice.currency + ' ' + li.unit_price.toFixed(2) + '</td><td class=\"amount-col\">' + invoice.currency + ' ' + li.amount.toFixed(2) + '</td></tr>').join('')}\n    </tbody>\n  </table>\n  <table class=\"totals\">\n    <tr><td>Subtotal</td><td class=\"amount-col\">${invoice.currency} ${invoice.subtotal.toFixed(2)}</td></tr>\n    <tr><td>Tax (${(invoice.tax_rate * 100).toFixed(1)}%)</td><td class=\"amount-col\">${invoice.currency} ${invoice.tax_amount.toFixed(2)}</td></tr>\n    <tr class=\"total-row\"><td>Total</td><td class=\"amount-col\">${invoice.currency} ${invoice.total.toFixed(2)}</td></tr>\n  </table>\n  ${invoice.notes ? '<div style=\"margin-top: 20px; padding: 16px; background: #f8fafc; border-radius: 8px;\"><strong>Notes:</strong> ' + invoice.notes + '</div>' : ''}\n  <div class=\"footer\">\n    <p>Thank you for your business. Payment is due by ${invoice.due_date}.</p>\n    <p>Syncta LLC &bull; Wyoming, USA &bull; syncta.ai</p>\n  </div>\n</body>\n</html>`;\n\nreturn [{ json: { ...invoice, html_content: html } }];"
+      },
+      "id": "generate-html",
+      "name": "Generate Invoice HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.PDF_SERVICE_URL}}/generate",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "html",
+              "value": "={{$json.html_content}}"
+            },
+            {
+              "name": "filename",
+              "value": "={{$json.invoice_number}}.pdf"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "generate-pdf",
+      "name": "Generate PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1120,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "invoices",
+        "fileName": "={{$json.invoice_number}}.pdf"
+      },
+      "id": "upload-storage",
+      "name": "Upload to Storage",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "billing@syncta.ai",
+        "toEmail": "={{$json.client_email}}",
+        "subject": "Invoice {{$json.invoice_number}} from Syncta",
+        "html": "<p>Hi {{$json.client_name}},</p><p>Please find attached your invoice <strong>{{$json.invoice_number}}</strong> for <strong>{{$json.currency}} {{$json.total}}</strong>.</p><p>Payment is due by <strong>{{$json.due_date}}</strong>.</p><p>If you have any questions, reply to this email.</p><p>Best,<br/>Syncta Billing</p>",
+        "attachments": "data",
+        "options": {}
+      },
+      "id": "send-email",
+      "name": "Email Invoice",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        200
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-creds",
+          "name": "SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#billing",
+        "text": ":receipt: *Invoice Sent*\n\n*Client:* {{$json.client_name}}\n*Invoice:* {{$json.invoice_number}}\n*Amount:* {{$json.currency}} {{$json.total}}\n*Due:* {{$json.due_date}}",
+        "attachments": [],
+        "otherOptions": {}
+      },
+      "id": "slack-notify",
+      "name": "Slack Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        400
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-creds",
+          "name": "Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{$env.APP_URL}}/api/billing/invoices/{{$json.invoice_number}}/mark-sent",
+        "method": "PATCH",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "update-status",
+      "name": "Mark as Sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1780,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "app-api-key",
+          "name": "App API Key"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Monthly Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Billable Clients",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Billable Clients": {
+      "main": [
+        [
+          {
+            "node": "Calculate Invoice Totals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Invoice Totals": {
+      "main": [
+        [
+          {
+            "node": "Store in Database",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Generate Invoice HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Invoice HTML": {
+      "main": [
+        [
+          {
+            "node": "Generate PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate PDF": {
+      "main": [
+        [
+          {
+            "node": "Upload to Storage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to Storage": {
+      "main": [
+        [
+          {
+            "node": "Email Invoice",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Slack Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Invoice": {
+      "main": [
+        [
+          {
+            "node": "Mark as Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Notification": {
+      "main": [
+        [
+          {
+            "node": "Mark as Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "billing",
+      "id": "billing"
+    },
+    {
+      "name": "invoicing",
+      "id": "invoicing"
+    },
+    {
+      "name": "automation",
+      "id": "automation"
+    },
+    {
+      "name": "pdf",
+      "id": "pdf"
+    }
+  ]
+}
