@@ -1,0 +1,319 @@
+{
+  "name": "Webhook Retry Handler",
+  "description": "Reliable webhook delivery with exponential backoff, dead letter queue, and Slack alerting. Retries failed deliveries up to 5 times with increasing delays (1s, 4s, 16s, 64s, 256s).",
+  "tags": [
+    "webhook",
+    "retry",
+    "reliability",
+    "dead-letter-queue"
+  ],
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "incoming-webhook",
+        "responseMode": "onReceived",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "n1",
+      "name": "Receive Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const payload = items[0].json;\nconst id = `wh_${Date.now()}_${Math.random().toString(36).substr(2,9)}`;\nreturn [{json:{webhookId:id,payload,metadata:{receivedAt:new Date().toISOString(),attempt:1,maxAttempts:5,nextRetryMs:1000,status:'pending',source:payload.source||'unknown',eventType:payload.event||payload.type||'unknown'}}}];"
+      },
+      "id": "n2",
+      "name": "Prepare Webhook Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$json.payload.target_url || 'https://api.example.com/webhook'}}",
+        "method": "POST",
+        "bodyParametersJson": "={{JSON.stringify($json.payload)}}",
+        "headerParameters": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-ID",
+              "value": "={{$json.webhookId}}"
+            },
+            {
+              "name": "X-Attempt",
+              "value": "={{$json.metadata.attempt}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "fullResponse": true
+        }
+      },
+      "id": "n3",
+      "name": "Deliver Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        680,
+        300
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.statusCode}}",
+              "operation": "smallerEqual",
+              "value2": 299
+            },
+            {
+              "value1": "={{$json.statusCode}}",
+              "operation": "largerEqual",
+              "value2": 200
+            }
+          ]
+        }
+      },
+      "id": "n4",
+      "name": "Delivery Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const item = items[0].json;\nconst now = new Date().toISOString();\nreturn [{json:{webhookId:item.webhookId,status:'delivered',deliveredAt:now,attempt:item.metadata.attempt,statusCode:item.statusCode,responseTime:item.responseTime||0}}];"
+      },
+      "id": "n5",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1140,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.metadata.attempt}}",
+              "operation": "smaller",
+              "value2": "={{$json.metadata.maxAttempts}}"
+            }
+          ]
+        }
+      },
+      "id": "n6",
+      "name": "Retries Left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1140,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const item = items[0].json;\nconst attempt = item.metadata.attempt + 1;\nconst delay = Math.pow(4, attempt - 1) * 1000;\nreturn [{json:{...item,metadata:{...item.metadata,attempt,nextRetryMs:delay,status:'retrying',lastError:item.error||item.statusCode||'unknown'}}}];"
+      },
+      "id": "n7",
+      "name": "Calculate Backoff",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "value": "={{$json.metadata.nextRetryMs}}",
+        "unit": "milliseconds"
+      },
+      "id": "n8",
+      "name": "Wait Backoff",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        1580,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const item = items[0].json;\nconst now = new Date().toISOString();\nreturn [{json:{webhookId:item.webhookId,payload:item.payload,status:'dead_letter',failedAt:now,totalAttempts:item.metadata.maxAttempts,lastError:item.error||item.statusCode||'unknown',eventType:item.metadata.eventType,source:item.metadata.source}}];"
+      },
+      "id": "n9",
+      "name": "Dead Letter Queue",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#ops-alerts",
+        "text": "={{\"\\u26a0\\ufe0f Webhook delivery failed permanently\\n\\nID: \" + $json.webhookId + \"\\nEvent: \" + $json.eventType + \"\\nSource: \" + $json.source + \"\\nAttempts: \" + $json.totalAttempts + \"\\nLast Error: \" + $json.lastError + \"\\n\\nPayload saved to dead letter queue.\"}}"
+      },
+      "id": "n10",
+      "name": "Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [
+        1580,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "tableName": "webhook_deliveries",
+        "columns": "webhook_id,status,payload,attempts,last_error,event_type,source,created_at",
+        "additionalFields": {}
+      },
+      "id": "n11",
+      "name": "Store in Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1580,
+        640
+      ]
+    }
+  ],
+  "connections": {
+    "Receive Webhook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Webhook Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Webhook Data": {
+      "main": [
+        [
+          {
+            "node": "Deliver Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver Webhook": {
+      "main": [
+        [
+          {
+            "node": "Delivery Success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delivery Success?": {
+      "main": [
+        [
+          {
+            "node": "Log Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retries Left?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retries Left?": {
+      "main": [
+        [
+          {
+            "node": "Calculate Backoff",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead Letter Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Backoff": {
+      "main": [
+        [
+          {
+            "node": "Wait Backoff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Backoff": {
+      "main": [
+        [
+          {
+            "node": "Deliver Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead Letter Queue": {
+      "main": [
+        [
+          {
+            "node": "Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Store in Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
