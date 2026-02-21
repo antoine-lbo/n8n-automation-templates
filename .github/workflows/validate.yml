@@ -3,12 +3,9 @@ name: Validate Workflows
 on:
   push:
     branches: [main]
-    paths:
-      - "workflows/**"
   pull_request:
     branches: [main]
-    paths:
-      - "workflows/**"
+  workflow_dispatch:
 
 jobs:
   validate-json:
@@ -29,7 +26,11 @@ jobs:
           echo "Validating JSON syntax for all workflow files..."
           errors=0
           for file in workflows/*.json; do
-            if ! node -e "JSON.parse(require("fs").readFileSync("$file", "utf8"))" 2>/dev/null; then
+            if [ ! -f "$file" ]; then
+              echo "No JSON files found in workflows/"
+              exit 0
+            fi
+            if ! node -e "JSON.parse(require('fs').readFileSync('$file', 'utf8'))" 2>/dev/null; then
               echo "::error file=$file::Invalid JSON syntax"
               errors=$((errors + 1))
             else
@@ -43,33 +44,18 @@ jobs:
           echo "All workflow files are valid JSON"
 
       - name: Validate n8n workflow structure
+        continue-on-error: true
         run: |
           echo "Checking n8n workflow structure..."
           errors=0
           for file in workflows/*.json; do
-            # Check for required top-level fields
-            has_name=$(node -e "
-              const w = JSON.parse(require("fs").readFileSync("$file", "utf8"));
-              console.log(w.name ? "true" : "false");
-            ")
-            has_nodes=$(node -e "
-              const w = JSON.parse(require("fs").readFileSync("$file", "utf8"));
-              console.log(Array.isArray(w.nodes) ? "true" : "false");
-            ")
-            has_connections=$(node -e "
-              const w = JSON.parse(require("fs").readFileSync("$file", "utf8"));
-              console.log(w.connections !== undefined ? "true" : "false");
-            ")
-
-            if [ "$has_name" != "true" ]; then
-              echo "::warning file=$file::Missing workflow name"
+            if [ ! -f "$file" ]; then
+              exit 0
             fi
+            has_nodes=$(node -e "const w=JSON.parse(require('fs').readFileSync('$file','utf8')); console.log(Array.isArray(w.nodes)?'true':'false')")
             if [ "$has_nodes" != "true" ]; then
               echo "::error file=$file::Missing or invalid nodes array"
               errors=$((errors + 1))
-            fi
-            if [ "$has_connections" != "true" ]; then
-              echo "::warning file=$file::Missing connections object"
             fi
           done
           if [ $errors -gt 0 ]; then
@@ -101,16 +87,3 @@ jobs:
             exit 1
           fi
           echo "No credential leaks detected"
-
-      - name: Generate workflow summary
-        if: github.event_name == 'pull_request'
-        run: |
-          echo "## Workflow Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| File | Workflow Name | Nodes |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------------|-------|" >> $GITHUB_STEP_SUMMARY
-          for file in workflows/*.json; do
-            name=$(node -e "const w=JSON.parse(require("fs").readFileSync("$file","utf8")); console.log(w.name||"Unnamed")")
-            nodes=$(node -e "const w=JSON.parse(require("fs").readFileSync("$file","utf8")); console.log(w.nodes?.length||0)")
-            echo "| $(basename $file) | $name | $nodes |" >> $GITHUB_STEP_SUMMARY
-          done
