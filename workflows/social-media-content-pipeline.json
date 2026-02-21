@@ -1,0 +1,231 @@
+{
+  "name": "Social Media Content Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://newsapi.org/v2/top-headlines",
+        "qs": {
+          "category": "={{ $json.category || 'technology' }}",
+          "apiKey": "={{ $env.NEWS_API_KEY }}",
+          "pageSize": 5
+        },
+        "options": {}
+      },
+      "id": "fetch-news",
+      "name": "Fetch Trending News",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a social media content strategist. Generate engaging social media posts from news articles. Output JSON with fields: twitter_post (max 280 chars), linkedin_post (max 1300 chars), instagram_caption (max 2200 chars), hashtags (array of 5-10 relevant hashtags)."
+            },
+            {
+              "role": "user",
+              "content": "=Create social media content from this article:\nTitle: {{ $json.title }}\nDescription: {{ $json.description }}\nSource: {{ $json.source.name }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7
+        }
+      },
+      "id": "generate-content",
+      "name": "AI Generate Posts",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiResponse = JSON.parse($input.first().json.message.content);\nreturn [{\n  json: {\n    twitter: aiResponse.twitter_post,\n    linkedin: aiResponse.linkedin_post,\n    instagram: aiResponse.instagram_caption,\n    hashtags: aiResponse.hashtags,\n    source_title: $('Fetch Trending News').first().json.title,\n    generated_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "parse-content",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "tweet",
+        "text": "={{ $json.twitter }}\n\n{{ $json.hashtags.slice(0, 3).map(h => '#' + h).join(' ') }}"
+      },
+      "id": "post-twitter",
+      "name": "Post to Twitter/X",
+      "type": "n8n-nodes-base.twitter",
+      "typeVersion": 2,
+      "position": [
+        1130,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "person": "={{ $env.LINKEDIN_PERSON_URN }}",
+        "text": "={{ $json.linkedin }}\n\n{{ $json.hashtags.map(h => '#' + h).join(' ') }}"
+      },
+      "id": "post-linkedin",
+      "name": "Post to LinkedIn",
+      "type": "n8n-nodes-base.linkedIn",
+      "typeVersion": 1,
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "sheetId": {
+          "value": "={{ $env.CONTENT_SHEET_ID }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "date": "={{ $json.generated_at }}",
+            "platform": "all",
+            "twitter_post": "={{ $json.twitter }}",
+            "linkedin_post": "={{ $json.linkedin }}",
+            "instagram_caption": "={{ $json.instagram }}",
+            "hashtags": "={{ $json.hashtags.join(', ') }}",
+            "source": "={{ $json.source_title }}",
+            "status": "posted"
+          }
+        }
+      },
+      "id": "log-sheet",
+      "name": "Log to Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1350,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "={{ $env.SLACK_CONTENT_CHANNEL }}",
+        "text": "=:rocket: New content published!\n\n*Twitter:* {{ $json.twitter }}\n\n*LinkedIn:* {{ $json.linkedin.substring(0, 100) }}...\n\n*Hashtags:* {{ $json.hashtags.map(h => '#' + h).join(' ') }}",
+        "otherOptions": {}
+      },
+      "id": "notify-slack",
+      "name": "Notify Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1350,
+        480
+      ]
+    }
+  ],
+  "connections": {
+    "Daily Schedule": {
+      "main": [
+        [
+          {
+            "node": "Fetch Trending News",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Trending News": {
+      "main": [
+        [
+          {
+            "node": "AI Generate Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Generate Posts": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Post to Twitter/X",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Post to LinkedIn",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log to Google Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notify Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "description": "Automated social media content pipeline: fetches trending news, generates platform-specific posts using GPT-4, publishes to Twitter/X and LinkedIn, logs to Google Sheets, and notifies via Slack.",
+    "categories": [
+      "marketing",
+      "social-media",
+      "ai",
+      "content"
+    ],
+    "author": "Antoine Batreau — Syncta.ai"
+  }
+}
