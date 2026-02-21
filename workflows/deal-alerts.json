@@ -1,0 +1,310 @@
+{
+  "name": "CRM Deal Stage Alerts & Pipeline Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "events": [
+          "deal.propertyChange"
+        ],
+        "property": "dealstage"
+      },
+      "id": "deal-0001",
+      "name": "HubSpot Deal Trigger",
+      "type": "n8n-nodes-base.hubspotTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "get",
+        "dealId": "={{ $json.objectId }}",
+        "additionalFields": {
+          "includePropertyVersions": true
+        }
+      },
+      "id": "deal-0002",
+      "name": "Get Deal Details",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const deal = $input.first().json;\nconst amount = parseFloat(deal.properties.amount) || 0;\nconst stage = deal.properties.dealstage;\nconst closeDate = new Date(deal.properties.closedate);\nconst now = new Date();\nconst daysToClose = Math.ceil((closeDate - now) / (1000 * 60 * 60 * 24));\nconst owner = deal.properties.hubspot_owner_id;\n\nconst stageMap = {\n  'appointmentscheduled': { name: 'Discovery', priority: 'low' },\n  'qualifiedtobuy': { name: 'Qualified', priority: 'medium' },\n  'presentationscheduled': { name: 'Demo', priority: 'medium' },\n  'decisionmakerboughtin': { name: 'Decision Maker', priority: 'high' },\n  'contractsent': { name: 'Contract Sent', priority: 'high' },\n  'closedwon': { name: 'Closed Won', priority: 'critical' },\n  'closedlost': { name: 'Closed Lost', priority: 'critical' }\n};\n\nconst stageInfo = stageMap[stage] || { name: stage, priority: 'low' };\nconst isHighValue = amount >= 50000;\nconst isUrgent = daysToClose <= 7 && daysToClose > 0;\nconst isAtRisk = daysToClose < 0;\n\nreturn [{\n  json: {\n    ...deal.properties,\n    deal_id: deal.id,\n    stage_name: stageInfo.name,\n    priority: stageInfo.priority,\n    amount_formatted: '$' + amount.toLocaleString(),\n    days_to_close: daysToClose,\n    is_high_value: isHighValue,\n    is_urgent: isUrgent,\n    is_at_risk: isAtRisk,\n    alert_level: isAtRisk ? 'danger' : isUrgent ? 'warning' : isHighValue ? 'important' : 'info'\n  }\n}];"
+      },
+      "id": "deal-0003",
+      "name": "Enrich Deal Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.alert_level }}",
+              "value2": "danger"
+            },
+            {
+              "value1": "={{ $json.alert_level }}",
+              "value2": "warning"
+            },
+            {
+              "value1": "={{ $json.alert_level }}",
+              "value2": "important"
+            },
+            {
+              "value1": "={{ $json.alert_level }}",
+              "value2": "info"
+            }
+          ]
+        }
+      },
+      "id": "deal-0004",
+      "name": "Route by Alert Level",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#deals-critical",
+        "text": ":rotating_light: *DEAL AT RISK*\n*{{ $json.dealname }}* — {{ $json.amount_formatted }}\nStage: {{ $json.stage_name }}\n:warning: Close date was {{ Math.abs($json.days_to_close) }} days ago!\nOwner: <@{{ $json.hubspot_owner_id }}>\n\n_Immediate action required_",
+        "otherOptions": {
+          "unfurl_links": false
+        }
+      },
+      "id": "deal-0005",
+      "name": "Alert Danger",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#deals-pipeline",
+        "text": ":clock3: *Deal Closing Soon*\n*{{ $json.dealname }}* — {{ $json.amount_formatted }}\nStage: {{ $json.stage_name }}\nDays to close: {{ $json.days_to_close }}\nOwner: <@{{ $json.hubspot_owner_id }}>",
+        "otherOptions": {}
+      },
+      "id": "deal-0006",
+      "name": "Alert Warning",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#deals-pipeline",
+        "text": ":moneybag: *High-Value Deal Update*\n*{{ $json.dealname }}* — {{ $json.amount_formatted }}\nMoved to: {{ $json.stage_name }}\nDays to close: {{ $json.days_to_close }}\nOwner: <@{{ $json.hubspot_owner_id }}>",
+        "otherOptions": {}
+      },
+      "id": "deal-0007",
+      "name": "Alert Important",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#deals-pipeline",
+        "text": ":arrow_right: *Deal Stage Change*\n*{{ $json.dealname }}* — {{ $json.amount_formatted }}\nMoved to: {{ $json.stage_name }}",
+        "otherOptions": {}
+      },
+      "id": "deal-0008",
+      "name": "Alert Info",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "sheetId": "deal_tracking_sheet",
+        "range": "DealLog!A:H",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "A",
+              "fieldValue": "={{ $now.toISO() }}"
+            },
+            {
+              "column": "B",
+              "fieldValue": "={{ $json.dealname }}"
+            },
+            {
+              "column": "C",
+              "fieldValue": "={{ $json.stage_name }}"
+            },
+            {
+              "column": "D",
+              "fieldValue": "={{ $json.amount_formatted }}"
+            },
+            {
+              "column": "E",
+              "fieldValue": "={{ $json.hubspot_owner_id }}"
+            },
+            {
+              "column": "F",
+              "fieldValue": "={{ $json.alert_level }}"
+            },
+            {
+              "column": "G",
+              "fieldValue": "={{ $json.days_to_close }}"
+            }
+          ]
+        }
+      },
+      "id": "deal-0009",
+      "name": "Log to Analytics Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1340,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "HubSpot Deal Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Deal Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Deal Details": {
+      "main": [
+        [
+          {
+            "node": "Enrich Deal Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Deal Data": {
+      "main": [
+        [
+          {
+            "node": "Route by Alert Level",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Alert Level": {
+      "main": [
+        [
+          {
+            "node": "Alert Danger",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Warning",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Important",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Danger": {
+      "main": [
+        [
+          {
+            "node": "Log to Analytics Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Warning": {
+      "main": [
+        [
+          {
+            "node": "Log to Analytics Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Important": {
+      "main": [
+        [
+          {
+            "node": "Log to Analytics Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Info": {
+      "main": [
+        [
+          {
+            "node": "Log to Analytics Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "syncta-n8n-templates"
+  }
+}
