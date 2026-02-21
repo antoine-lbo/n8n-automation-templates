@@ -1,0 +1,266 @@
+{
+  "name": "Error Monitoring Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "error-webhook",
+        "httpMethod": "POST",
+        "responseMode": "onReceived"
+      },
+      "id": "node-1",
+      "name": "Error Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        250,
+        300
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "functionCode": "const error = $input.first().json;\n\nconst severity = (function() {\n  const msg = (error.message || '').toLowerCase();\n  const status = error.statusCode || error.status || 0;\n  if (status >= 500 || msg.includes('fatal') || msg.includes('crash')) return 'critical';\n  if (status >= 400 || msg.includes('timeout') || msg.includes('refused')) return 'high';\n  if (msg.includes('warning') || msg.includes('deprecated')) return 'low';\n  return 'medium';\n})();\n\nconst fingerprint = require('crypto')\n  .createHash('md5')\n  .update(`${error.service || 'unknown'}-${error.message || ''}-${error.endpoint || ''}`)\n  .digest('hex')\n  .substring(0, 12);\n\nreturn [{\n  json: {\n    ...error,\n    severity,\n    fingerprint,\n    timestamp: error.timestamp || new Date().toISOString(),\n    service: error.service || 'unknown',\n    environment: error.environment || 'production',\n    processed_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-2",
+      "name": "Classify Error Severity",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        470,
+        300
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.severity }}",
+              "operation": "equal",
+              "value2": "critical"
+            }
+          ]
+        }
+      },
+      "id": "node-3",
+      "name": "Is Critical?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        690,
+        300
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "channel": "#incidents",
+        "text": ":rotating_light: *CRITICAL ERROR*\n\n*Service:* {{ $json.service }}\n*Environment:* {{ $json.environment }}\n*Error:* {{ $json.message }}\n*Endpoint:* {{ $json.endpoint || 'N/A' }}\n*Fingerprint:* `{{ $json.fingerprint }}`\n*Time:* {{ $json.timestamp }}\n\n<{{ $json.trace_url || '#' }}|View Stack Trace>",
+        "otherOptions": {
+          "unfurl_links": false
+        }
+      },
+      "id": "node-4",
+      "name": "Slack Critical Alert",
+      "type": "n8n-nodes-base.slack",
+      "position": [
+        920,
+        180
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.pagerduty_url || 'https://events.pagerduty.com/v2/enqueue' }}",
+        "method": "POST",
+        "body": "json",
+        "jsonBody": "={\n  \"routing_key\": \"{{ $json.pagerduty_key || process.env.PAGERDUTY_KEY }}\",\n  \"event_action\": \"trigger\",\n  \"dedup_key\": \"{{ $json.fingerprint }}\",\n  \"payload\": {\n    \"summary\": \"[{{ $json.service }}] {{ $json.message }}\",\n    \"severity\": \"critical\",\n    \"source\": \"{{ $json.service }}\",\n    \"component\": \"{{ $json.endpoint || 'unknown' }}\"\n  }\n}"
+      },
+      "id": "node-5",
+      "name": "PagerDuty Incident",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        920,
+        320
+      ],
+      "typeVersion": 3
+    },
+    {
+      "parameters": {
+        "channel": "#errors",
+        "text": ":warning: *Error Detected*\n\n*Severity:* {{ $json.severity }}\n*Service:* {{ $json.service }}\n*Error:* {{ $json.message }}\n*Endpoint:* {{ $json.endpoint || 'N/A' }}\n*Fingerprint:* `{{ $json.fingerprint }}`"
+      },
+      "id": "node-6",
+      "name": "Slack Error Log",
+      "type": "n8n-nodes-base.slack",
+      "position": [
+        920,
+        460
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "functionCode": "const error = $input.first().json;\nconst now = new Date();\n\n// Build structured log entry for analytics\nreturn [{\n  json: {\n    fingerprint: error.fingerprint,\n    service: error.service,\n    severity: error.severity,\n    message: error.message,\n    endpoint: error.endpoint || null,\n    environment: error.environment,\n    status_code: error.statusCode || error.status || null,\n    user_id: error.user_id || null,\n    request_id: error.request_id || null,\n    stack_trace: error.stack || null,\n    metadata: error.metadata || {},\n    created_at: now.toISOString(),\n    date_partition: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`\n  }\n}];"
+      },
+      "id": "node-7",
+      "name": "Format Log Entry",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        690,
+        540
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "url": "={{ process.env.SUPABASE_URL }}/rest/v1/error_logs",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "body": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}"
+      },
+      "id": "node-8",
+      "name": "Store in Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        920,
+        620
+      ],
+      "typeVersion": 3
+    },
+    {
+      "parameters": {
+        "functionCode": "const error = $input.first().json;\n\n// Check if same fingerprint occurred 5+ times in last hour\n// This would query your error_logs table\nconst threshold = 5;\nconst windowMinutes = 60;\n\n// Simulated check — in production, query Supabase\nreturn [{\n  json: {\n    ...error,\n    check_url: `${process.env.SUPABASE_URL}/rest/v1/error_logs?fingerprint=eq.${error.fingerprint}&created_at=gte.${new Date(Date.now() - windowMinutes * 60000).toISOString()}&select=id`,\n    threshold,\n    window_minutes: windowMinutes\n  }\n}];"
+      },
+      "id": "node-9",
+      "name": "Check Error Frequency",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1140,
+        620
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "subject": "=Error Spike Alert: {{ $json.service }} - {{ $json.fingerprint }}",
+        "message": "=<h2>Error Spike Detected</h2><p>The following error has occurred <strong>{{ $json.threshold }}+ times</strong> in the last <strong>{{ $json.window_minutes }} minutes</strong>:</p><ul><li><strong>Service:</strong> {{ $json.service }}</li><li><strong>Severity:</strong> {{ $json.severity }}</li><li><strong>Message:</strong> {{ $json.message }}</li><li><strong>Fingerprint:</strong> {{ $json.fingerprint }}</li><li><strong>Environment:</strong> {{ $json.environment }}</li></ul><p>Please investigate immediately.</p>",
+        "toEmail": "=alerts@syncta.ai"
+      },
+      "id": "node-10",
+      "name": "Spike Alert Email",
+      "type": "n8n-nodes-base.emailSend",
+      "position": [
+        1360,
+        620
+      ],
+      "typeVersion": 1
+    }
+  ],
+  "connections": {
+    "Error Webhook": {
+      "main": [
+        [
+          {
+            "node": "Classify Error Severity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Error Severity": {
+      "main": [
+        [
+          {
+            "node": "Is Critical?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Format Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Critical?": {
+      "main": [
+        [
+          {
+            "node": "Slack Critical Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "PagerDuty Incident",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Log Entry": {
+      "main": [
+        [
+          {
+            "node": "Store in Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Supabase": {
+      "main": [
+        [
+          {
+            "node": "Check Error Frequency",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Error Frequency": {
+      "main": [
+        [
+          {
+            "node": "Spike Alert Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "syncta-n8n-templates",
+    "templateId": "error-monitoring-pipeline"
+  },
+  "tags": [
+    {
+      "name": "monitoring"
+    },
+    {
+      "name": "error-handling"
+    },
+    {
+      "name": "alerting"
+    },
+    {
+      "name": "production"
+    }
+  ]
+}
