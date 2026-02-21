@@ -1,0 +1,316 @@
+{
+  "name": "Smart Follow-Up Email Sequencer",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "seq-0001",
+      "name": "Hourly Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "sheetId": "sequence_tracking_sheet",
+        "range": "ActiveSequences!A:J",
+        "filters": {
+          "column": "H",
+          "value": "active"
+        }
+      },
+      "id": "seq-0002",
+      "name": "Get Active Sequences",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst items = $input.all();\nconst dueItems = items.filter(item => {\n  const nextSendDate = new Date(item.json.next_send_date);\n  return nextSendDate <= now;\n});\nreturn dueItems;"
+      },
+      "id": "seq-0003",
+      "name": "Filter Due Follow-ups",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.hubspot.com/crm/v3/objects/contacts/{{ $json.contact_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotApi",
+        "options": {}
+      },
+      "id": "seq-0004",
+      "name": "Get Contact Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.properties.hs_email_last_reply_date }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "seq-0005",
+      "name": "Check If Replied",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "sheetId": "sequence_tracking_sheet",
+        "range": "ActiveSequences!A:J",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "H",
+              "fieldValue": "replied"
+            },
+            {
+              "column": "J",
+              "fieldValue": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "seq-0006",
+      "name": "Mark as Replied",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1340,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4",
+        "messages": {
+          "values": [
+            {
+              "content": "Write a personalized follow-up email for a B2B sales sequence.\n\nContext:\n- Contact: {{ $json.properties.firstname }} {{ $json.properties.lastname }}\n- Company: {{ $json.properties.company }}\n- Industry: {{ $json.properties.industry }}\n- Previous emails sent: {{ $json.sequence_step }}\n- Original interest: {{ $json.original_interest }}\n- Days since last email: {{ $json.days_since_last }}\n\nSequence step {{ $json.sequence_step + 1 }} guidelines:\n- Step 2: Add social proof / case study\n- Step 3: Share relevant content / resource\n- Step 4: Create urgency (limited offer)\n- Step 5: Break-up email (last chance)\n\nKeep it under 150 words. Be conversational, not salesy. Include a clear CTA."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.8
+        }
+      },
+      "id": "seq-0007",
+      "name": "AI Generate Email",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $json.sender_email }}",
+        "toEmail": "={{ $json.properties.email }}",
+        "subject": "={{ $json.email_subject }}",
+        "emailType": "html",
+        "html": "={{ $json.generated_email }}",
+        "options": {
+          "replyTo": "={{ $json.sender_email }}"
+        }
+      },
+      "id": "seq-0008",
+      "name": "Send Follow-Up",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "sheetId": "sequence_tracking_sheet",
+        "range": "ActiveSequences!A:J",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "E",
+              "fieldValue": "={{ $json.sequence_step + 1 }}"
+            },
+            {
+              "column": "F",
+              "fieldValue": "={{ $now.toISO() }}"
+            },
+            {
+              "column": "G",
+              "fieldValue": "={{ $now.plus({days: $json.delay_days}).toISO() }}"
+            },
+            {
+              "column": "H",
+              "fieldValue": "={{ $json.sequence_step >= 4 ? 'completed' : 'active' }}"
+            }
+          ]
+        }
+      },
+      "id": "seq-0009",
+      "name": "Update Sequence Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1780,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#sales-activity",
+        "text": ":email: *Follow-up Sent*\nTo: {{ $json.properties.firstname }} {{ $json.properties.lastname }} ({{ $json.properties.company }})\nStep: {{ $json.sequence_step + 1 }}/5\nNext: {{ $json.sequence_step >= 4 ? 'Sequence complete' : 'In ' + $json.delay_days + ' days' }}",
+        "otherOptions": {}
+      },
+      "id": "seq-0010",
+      "name": "Log to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "Hourly Check": {
+      "main": [
+        [
+          {
+            "node": "Get Active Sequences",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Active Sequences": {
+      "main": [
+        [
+          {
+            "node": "Filter Due Follow-ups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Due Follow-ups": {
+      "main": [
+        [
+          {
+            "node": "Get Contact Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Contact Data": {
+      "main": [
+        [
+          {
+            "node": "Check If Replied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Replied": {
+      "main": [
+        [
+          {
+            "node": "Mark as Replied",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Generate Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Generate Email": {
+      "main": [
+        [
+          {
+            "node": "Send Follow-Up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Follow-Up": {
+      "main": [
+        [
+          {
+            "node": "Update Sequence Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Sequence Status": {
+      "main": [
+        [
+          {
+            "node": "Log to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "syncta-n8n-templates"
+  }
+}
