@@ -1,0 +1,386 @@
+{
+  "name": "Customer Onboarding Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "onboarding/start",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-1",
+      "name": "New Signup Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const customer = $input.first().json.body;\n\nconst onboardingId = `onb_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;\n\nreturn [{\n  json: {\n    onboarding_id: onboardingId,\n    customer_id: customer.customer_id,\n    email: customer.email,\n    name: customer.name,\n    company: customer.company || null,\n    plan: customer.plan || 'free',\n    source: customer.source || 'direct',\n    created_at: new Date().toISOString(),\n    steps_completed: [],\n    current_step: 'welcome_email',\n    status: 'in_progress'\n  }\n}];"
+      },
+      "id": "node-2",
+      "name": "Initialize Onboarding",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "upsert",
+        "email": "={{ $json.email }}",
+        "additionalFields": {
+          "firstName": "={{ $json.name.split(' ')[0] }}",
+          "lastName": "={{ $json.name.split(' ').slice(1).join(' ') }}",
+          "company": "={{ $json.company }}",
+          "customProperties": {
+            "property": [
+              {
+                "name": "onboarding_status",
+                "value": "started"
+              },
+              {
+                "name": "plan_type",
+                "value": "={{ $json.plan }}"
+              },
+              {
+                "name": "signup_source",
+                "value": "={{ $json.source }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "node-3",
+      "name": "Create CRM Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 1,
+      "position": [
+        680,
+        160
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "1",
+          "name": "HubSpot API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "table": "customers",
+        "columns": "id, email, name, company, plan, onboarding_id, onboarding_status, created_at",
+        "conflictColumns": "email",
+        "options": {}
+      },
+      "id": "node-4",
+      "name": "Store in Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        680,
+        440
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "2",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "onboarding@syncta.ai",
+        "toEmail": "={{ $json.email }}",
+        "subject": "Welcome to Syncta! Let's get you started",
+        "emailType": "html",
+        "html": "<!DOCTYPE html><html><body style=\"font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 600px; margin: 0 auto;\"><div style=\"background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 40px; text-align: center; border-radius: 12px 12px 0 0;\"><h1 style=\"color: white; margin: 0;\">Welcome, {{ $json.name }}!</h1></div><div style=\"padding: 30px; background: #fff;\"><p>We're thrilled to have you on board. Here's how to make the most of Syncta:</p><ol><li><strong>Complete your profile</strong> — Add your team details</li><li><strong>Connect your tools</strong> — Integrate your existing stack</li><li><strong>Create your first workflow</strong> — We'll guide you step by step</li></ol><a href=\"https://app.syncta.ai/onboarding/{{ $json.onboarding_id }}\" style=\"display: inline-block; background: #6366f1; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 600;\">Start Setup →</a></div></body></html>"
+      },
+      "id": "node-5",
+      "name": "Send Welcome Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        920,
+        160
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "3",
+          "name": "SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "unit": "hours",
+        "value": 24
+      },
+      "id": "node-6",
+      "name": "Wait 24h",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "table": "customers",
+        "filterType": "string",
+        "filterString": "onboarding_id=eq.{{ $json.onboarding_id }}",
+        "options": {}
+      },
+      "id": "node-7",
+      "name": "Check Onboarding Progress",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "2",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.profile_completed }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-8",
+      "name": "Profile Completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "onboarding@syncta.ai",
+        "toEmail": "={{ $json.email }}",
+        "subject": "Need help getting started? We're here for you",
+        "emailType": "html",
+        "html": "<!DOCTYPE html><html><body style=\"font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 600px; margin: 0 auto;\"><div style=\"padding: 30px;\"><h2>Hi {{ $json.name }},</h2><p>We noticed you haven't completed your profile setup yet. No worries — we're here to help!</p><p>Here are some resources to get you started:</p><ul><li><a href=\"https://docs.syncta.ai/quickstart\">Quick Start Guide</a> (5 min read)</li><li><a href=\"https://syncta.ai/demo\">Watch a Demo</a> (3 min video)</li><li><a href=\"https://cal.com/syncta/onboarding\">Book a Free Setup Call</a></li></ul><a href=\"https://app.syncta.ai/onboarding/{{ $json.onboarding_id }}\" style=\"display: inline-block; background: #6366f1; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none;\">Continue Setup →</a></div></body></html>"
+      },
+      "id": "node-9",
+      "name": "Send Nudge Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        1800,
+        440
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "3",
+          "name": "SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#customer-success",
+        "text": ":tada: *New customer onboarded!*\n\n• *Name:* {{ $json.name }}\n• *Company:* {{ $json.company || 'Individual' }}\n• *Plan:* {{ $json.plan }}\n• *Profile:* Completed\n\n<https://app.syncta.ai/admin/customers/{{ $json.customer_id }}|View in Dashboard>",
+        "otherOptions": {}
+      },
+      "id": "node-10",
+      "name": "Notify Success Team",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [
+        1800,
+        160
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "4",
+          "name": "Slack API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "onboarding@syncta.ai",
+        "toEmail": "={{ $json.email }}",
+        "subject": "You're all set! Here's what's next",
+        "emailType": "html",
+        "html": "<!DOCTYPE html><html><body style=\"font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 600px; margin: 0 auto;\"><div style=\"background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 40px; text-align: center; border-radius: 12px 12px 0 0;\"><h1 style=\"color: white;\">Setup Complete!</h1></div><div style=\"padding: 30px;\"><p>Great job, {{ $json.name }}! Your workspace is ready.</p><h3>Recommended next steps:</h3><ol><li>Invite your team members</li><li>Set up your first automation</li><li>Explore our template library</li></ol><a href=\"https://app.syncta.ai/dashboard\" style=\"display: inline-block; background: #10b981; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 600;\">Go to Dashboard →</a></div></body></html>"
+      },
+      "id": "node-11",
+      "name": "Send Completion Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        2020,
+        160
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "3",
+          "name": "SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, onboarding_id: $('Initialize Onboarding').first().json.onboarding_id, message: 'Onboarding started' }) }}"
+      },
+      "id": "node-12",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        920,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "New Signup Webhook": {
+      "main": [
+        [
+          {
+            "node": "Initialize Onboarding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Onboarding": {
+      "main": [
+        [
+          {
+            "node": "Create CRM Contact",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Store in Supabase",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create CRM Contact": {
+      "main": [
+        [
+          {
+            "node": "Send Welcome Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Welcome Email": {
+      "main": [
+        [
+          {
+            "node": "Wait 24h",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 24h": {
+      "main": [
+        [
+          {
+            "node": "Check Onboarding Progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Onboarding Progress": {
+      "main": [
+        [
+          {
+            "node": "Profile Completed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Profile Completed?": {
+      "main": [
+        [
+          {
+            "node": "Notify Success Team",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Nudge Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Success Team": {
+      "main": [
+        [
+          {
+            "node": "Send Completion Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "onboarding"
+    },
+    {
+      "name": "customer-success"
+    },
+    {
+      "name": "email"
+    },
+    {
+      "name": "crm"
+    }
+  ],
+  "pinData": {},
+  "versionId": "1"
+}
