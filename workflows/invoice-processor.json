@@ -1,0 +1,295 @@
+{
+  "name": "Invoice Processing & Accounting Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "events": [
+          "*"
+        ],
+        "path": "invoice-upload"
+      },
+      "id": "inv-0001",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.file_url }}",
+        "responseFormat": "file",
+        "options": {}
+      },
+      "id": "inv-0002",
+      "name": "Download Invoice PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4-vision-preview",
+        "messages": {
+          "values": [
+            {
+              "content": "Extract the following fields from this invoice image:\n- Invoice number\n- Date\n- Due date\n- Vendor name\n- Vendor address\n- Line items (description, quantity, unit price, total)\n- Subtotal\n- Tax amount and rate\n- Total amount\n- Payment terms\n- Currency\n\nReturn as structured JSON only."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "inv-0003",
+      "name": "AI Extract Invoice Data",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = JSON.parse($input.first().json.text);\nconst lineItems = data.line_items || [];\nconst calculatedTotal = lineItems.reduce((sum, item) => sum + (item.total || 0), 0);\nconst taxAmount = data.tax_amount || 0;\nconst expectedTotal = calculatedTotal + taxAmount;\nconst invoiceTotal = data.total_amount || 0;\nconst tolerance = 0.01;\n\nreturn [{\n  json: {\n    ...data,\n    validation: {\n      line_items_sum: calculatedTotal,\n      expected_total: expectedTotal,\n      invoice_total: invoiceTotal,\n      math_valid: Math.abs(expectedTotal - invoiceTotal) < tolerance,\n      has_required_fields: !!(data.invoice_number && data.date && data.vendor_name && data.total_amount),\n      confidence_score: data.invoice_number && data.date && data.total_amount ? 0.95 : 0.6\n    }\n  }\n}];"
+      },
+      "id": "inv-0004",
+      "name": "Validate & Calculate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.validation.math_valid }}",
+              "value2": true
+            }
+          ],
+          "number": [
+            {
+              "value1": "={{ $json.validation.confidence_score }}",
+              "operation": "largerEqual",
+              "value2": 0.8
+            }
+          ]
+        }
+      },
+      "id": "inv-0005",
+      "name": "Validation Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "invoice",
+        "operation": "create",
+        "additionalFields": {
+          "invoiceNumber": "={{ $json.invoice_number }}",
+          "date": "={{ $json.date }}",
+          "dueDate": "={{ $json.due_date }}",
+          "contact": "={{ $json.vendor_name }}",
+          "lineItems": "={{ $json.line_items }}",
+          "total": "={{ $json.total_amount }}",
+          "currency": "={{ $json.currency }}"
+        }
+      },
+      "id": "inv-0006",
+      "name": "Create in Xero",
+      "type": "n8n-nodes-base.xero",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "sheetId": "invoice_tracking_sheet_id",
+        "range": "Invoices!A:L",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "A",
+              "fieldValue": "={{ $json.invoice_number }}"
+            },
+            {
+              "column": "B",
+              "fieldValue": "={{ $json.date }}"
+            },
+            {
+              "column": "C",
+              "fieldValue": "={{ $json.vendor_name }}"
+            },
+            {
+              "column": "D",
+              "fieldValue": "={{ $json.total_amount }}"
+            },
+            {
+              "column": "E",
+              "fieldValue": "={{ $json.currency }}"
+            },
+            {
+              "column": "F",
+              "fieldValue": "={{ $json.due_date }}"
+            },
+            {
+              "column": "G",
+              "fieldValue": "processed"
+            },
+            {
+              "column": "H",
+              "fieldValue": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "inv-0007",
+      "name": "Log to Spreadsheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1560,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#finance",
+        "text": ":receipt: *Invoice Processed*\nVendor: {{ $json.vendor_name }}\nAmount: {{ $json.currency }} {{ $json.total_amount }}\nDue: {{ $json.due_date }}\nInvoice #: {{ $json.invoice_number }}\nStatus: :white_check_mark: Auto-approved",
+        "otherOptions": {}
+      },
+      "id": "inv-0008",
+      "name": "Notify Finance Team",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#finance",
+        "text": ":warning: *Invoice Needs Review*\nVendor: {{ $json.vendor_name }}\nAmount: {{ $json.currency }} {{ $json.total_amount }}\nIssue: {{ $json.validation.math_valid ? 'Low confidence extraction' : 'Math validation failed' }}\nConfidence: {{ ($json.validation.confidence_score * 100).toFixed(0) }}%\n\nPlease review manually.",
+        "otherOptions": {}
+      },
+      "id": "inv-0009",
+      "name": "Flag for Manual Review",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Download Invoice PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Invoice PDF": {
+      "main": [
+        [
+          {
+            "node": "AI Extract Invoice Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Extract Invoice Data": {
+      "main": [
+        [
+          {
+            "node": "Validate & Calculate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Calculate": {
+      "main": [
+        [
+          {
+            "node": "Validation Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Check": {
+      "main": [
+        [
+          {
+            "node": "Create in Xero",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Flag for Manual Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create in Xero": {
+      "main": [
+        [
+          {
+            "node": "Log to Spreadsheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Spreadsheet": {
+      "main": [
+        [
+          {
+            "node": "Notify Finance Team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "syncta-n8n-templates"
+  }
+}
